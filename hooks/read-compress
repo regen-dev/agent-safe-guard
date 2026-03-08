@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# read-compress: Summarize large file reads to reduce tokens
+set -o pipefail
+
+source "${BASH_SOURCE[0]%/*}/lib/common.sh"
+
+_sg_read_input || exit 0
+
+TOOL_NAME=$(_sg_parse_tool_name)
+TRANSCRIPT_PATH=$(_sg_parse_transcript_path)
+IFS=$'\t' read -r FILE_PATH < <(_sg_parse_tool_input file_path)
+
+[[ "$TOOL_NAME" != "Read" ]] && exit 0
+
+IS_SUBAGENT=false
+[[ "$TRANSCRIPT_PATH" == *"/subagents/"* ]] && IS_SUBAGENT=true
+[[ "$TRANSCRIPT_PATH" == *"/tmp/"* ]] && IS_SUBAGENT=true
+
+CONTENT=$(printf '%s' "$SG_INPUT" | jq -r '.tool_response.content[0].text // ""' 2>/dev/null)
+[[ -z "$CONTENT" ]] && exit 0
+ORIGINAL_SIZE=${#CONTENT}
+
+# Strip system reminders
+REMINDER_STRIPPED=false
+case "$CONTENT" in
+    *'<system-reminder>'*)
+        CONTENT=$(_sg_strip_reminders CONTENT)
+        REMINDER_STRIPPED=true
+        SG_TOOL_NAME="Read" SG_COMMAND="$FILE_PATH" \
+        _sg_emit_event "truncated" "$ORIGINAL_SIZE" "${#CONTENT}" "system_reminder"
+        ;;
+esac
+
+LINES=$(printf '%s' "$CONTENT" | awk 'END{print NR}')
+
+# Detect agent type
+AGENT_TYPE=""
+if [[ "$IS_SUBAGENT" == true && "$TRANSCRIPT_PATH" == *"/subagents/"* ]]; then
+    AGENT_ID=$(_sg_get_agent_id "$TRANSCRIPT_PATH")
+    if [[ -n "$AGENT_ID" ]]; then
+        AGENT_TYPE=$(grep 'AGENT_TYPE=' "$SG_SUBAGENT_STATE_DIR/$AGENT_ID" 2>/dev/null | head -1 | cut -d= -f2)
+    fi
+fi
+
+_exit_maybe_stripped() {
+    if [[ "${REMINDER_STRIPPED:-false}" == true ]]; then
+        jq -n --arg text "$CONTENT" '{"modifyOutput":$text}'
+    fi
+    exit 0
+}
+
+# Skip compression for non-code files
+FILE_EXT="${FILE_PATH##*.}"
+case "$FILE_EXT" in
+    txt|md|markdown|rst|log|csv|tsv|env|conf|gitignore|dockerignore)
+        _exit_maybe_stripped ;;
+esac
+
+# Threshold: subagent=300, main=500
+if [[ "$IS_SUBAGENT" == true ]]; then
+    (( LINES <= 300 )) && _exit_maybe_stripped
+else
+    (( LINES <= 500 )) && _exit_maybe_stripped
+fi
+
+# Config/data file extraction
+case "$FILE_EXT" in
+    json)
+        SUMMARY=$(printf '%s' "$CONTENT" | awk '
+            /^[[:space:]]{0,4}"[^"]+":/ { print }
+        ' | head -150)
+        ;;
+    yml|yaml)
+        SUMMARY=$(printf '%s' "$CONTENT" | awk '
+            /^---/ { print; next }
+            /^[a-zA-Z_][a-zA-Z0-9_-]*:/ { print; next }
+            /^- [a-zA-Z]/ { print }
+        ' | head -150)
+        ;;
+    toml|cfg|ini)
+        SUMMARY=$(printf '%s' "$CONTENT" | awk '
+            /^\[/ { print; next }
+            /^[a-zA-Z_][a-zA-Z0-9_-]* *=/ { print }
+        ' | head -150)
+        ;;
+    xml|svg|html)
+        SUMMARY=$(printf '%s' "$CONTENT" | awk '
+            /^[[:space:]]*<[a-zA-Z][^>]*>/ { print }
+        ' | head -100)
+        ;;
+    *)
+        SUMMARY=""
+        ;;
+esac
+
+if [[ -n "$SUMMARY" ]]; then
+    SUMMARY_LINES=$(printf '%s' "$SUMMARY" | awk 'END{print NR}')
+    (( SUMMARY_LINES >= LINES )) && _exit_maybe_stripped
+    _FINAL="$SUMMARY
+
+[Structure extracted: $LINES lines -> $SUMMARY_LINES keys/sections]
+[Use Read with offset/limit for full content]"
+    SG_TOOL_NAME="Read" SG_COMMAND="$FILE_PATH" \
+    _sg_emit_event "truncated" "$ORIGINAL_SIZE" "${#_FINAL}" "read_compress_config"
+    jq -n --arg text "$_FINAL" '{"modifyOutput":$text}'
+    exit 0
+fi
+
+# Code file structural extraction
+SUMMARY=$(printf '%s' "$CONTENT" | awk '
+    /^import [a-zA-Z]/ { print; next }
+    /^from [a-zA-Z].* import / { print; next }
+    /^class [a-zA-Z]/ { print; next }
+    /^def [a-zA-Z]/ { print; next }
+    /^async def [a-zA-Z]/ { print; next }
+    /^import .* from / { print; next }
+    /^export (default |const |let |function |class |interface |type |enum )/ { print; next }
+    /^const [a-zA-Z].*=/ { print; next }
+    /^function [a-zA-Z]/ { print; next }
+    /^async function [a-zA-Z]/ { print; next }
+    /^interface [a-zA-Z]/ { print; next }
+    /^type [a-zA-Z]/ { print; next }
+    /^use [a-zA-Z]/ { print; next }
+    /^pub (fn |struct |enum |trait |mod |type |use |const )/ { print; next }
+    /^fn [a-zA-Z]/ { print; next }
+    /^impl [a-zA-Z]/ { print; next }
+    /^struct [a-zA-Z]/ { print; next }
+    /^enum [a-zA-Z]/ { print; next }
+    /^trait [a-zA-Z]/ { print; next }
+    /^mod [a-zA-Z]/ { print; next }
+    /^package [a-zA-Z]/ { print; next }
+    /^import \(/ { print; next }
+    /^func [a-zA-Z\(]/ { print; next }
+    /^<\?php/ { print; next }
+    /^namespace [a-zA-Z]/ { print; next }
+    /^#{2,4} / { print; next }
+    /^[[:space:]]+(pub fn |async fn |def |async def |public function |private function |protected function )/ { print }
+    /^[[:space:]]+(public |private |protected )[a-zA-Z].*\(/ { print }
+' | head -200)
+
+SUMMARY_LINES=$(printf '%s' "$SUMMARY" | awk 'END{print NR}')
+(( SUMMARY_LINES >= LINES )) && _exit_maybe_stripped
+
+_FINAL="$SUMMARY
+
+[Structure extracted: $LINES lines -> $SUMMARY_LINES signatures]
+[Use Read with offset/limit for implementation details]"
+SG_TOOL_NAME="Read" SG_COMMAND="$FILE_PATH" \
+_sg_emit_event "truncated" "$ORIGINAL_SIZE" "${#_FINAL}" "read_compress_code"
+jq -n --arg text "$_FINAL" '{"modifyOutput":$text}'

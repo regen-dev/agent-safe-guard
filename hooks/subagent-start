@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# subagent-start: Budget enforcement + tracking + guidance
+set -euo pipefail
+
+source "${BASH_SOURCE[0]%/*}/lib/common.sh"
+
+SUBAGENT_COUNT_FILE="$SG_STATE_DIR/subagent-count"
+
+_sg_read_input || exit 0
+
+IFS=$'\t' read -r AGENT_ID AGENT_TYPE SESSION_ID < <(
+    printf '%s' "$SG_INPUT" | jq -r '[.agent_id // "unknown", .agent_type // "", .session_id // ""] | @tsv' 2>/dev/null
+) || exit 0
+
+AGENT_ID=$(_sg_sanitize_id "$AGENT_ID")
+SESSION_ID=$(_sg_sanitize_id "$SESSION_ID")
+[[ -z "$AGENT_ID" ]] && AGENT_ID="unknown"
+
+mkdir -p "$SG_SUBAGENT_STATE_DIR" "$SG_STATE_DIR"
+EPOCH=$(date +%s)
+
+# === BUDGET ENFORCEMENT ===
+if ! _sg_budget_check; then
+  STATS=$(_sg_budget_export)
+  UTIL=$(echo "$STATS" | jq -r '.utilization // 100')
+  CONSUMED=$(echo "$STATS" | jq -r '.consumed // 0')
+  TOTAL=$(echo "$STATS" | jq -r '.total_limit // 0')
+  jq -n --arg reason "Budget exhausted (${UTIL}% used). ${CONSUMED}/${TOTAL} tokens." \
+    '{"continue": false, "stopReason": $reason}'
+  exit 0
+fi
+
+# Budget threshold tracking (state file only, no desktop notification)
+ALERT_FILE="$SG_STATE_DIR/budget-alert"
+STATS=$(_sg_budget_export)
+UTIL=$(echo "$STATS" | jq -r '.utilization // 0' | cut -d. -f1)
+
+if [ "$UTIL" -ge 90 ]; then
+  echo "CRITICAL|$UTIL|$(date +%s)" > "$ALERT_FILE"
+elif [ "$UTIL" -ge 75 ]; then
+  PREV_LEVEL=$(cat "$ALERT_FILE" 2>/dev/null | cut -d'|' -f1 || echo "")
+  if [ "$PREV_LEVEL" != "WARNING" ] && [ "$PREV_LEVEL" != "CRITICAL" ]; then
+    echo "WARNING|$UTIL|$(date +%s)" > "$ALERT_FILE"
+  fi
+fi
+
+# Store state for cleanup
+echo "$EPOCH" > "$SG_SUBAGENT_STATE_DIR/$AGENT_ID.start"
+[[ -n "$SESSION_ID" ]] && echo "$AGENT_ID" > "$SG_SUBAGENT_STATE_DIR/session-$SESSION_ID"
+printf 'AGENT_TYPE=%s\nSESSION_ID=%s\n' "$AGENT_TYPE" "$SESSION_ID" > "$SG_SUBAGENT_STATE_DIR/$AGENT_ID"
+
+# Emit event
+_TS=$((_SG_NOW_S - _SG_SESSION_START_S))
+_AT_SAFE="${AGENT_TYPE//\"/\\\"}"
+printf '{"timestamp":%d,"event_type":"subagent_start","tool":"SubagentStart","session_id":"%s","agent_id":"%s","agent_type":"%s"}\n' \
+  "$_TS" "$SESSION_ID" "$AGENT_ID" "$_AT_SAFE" \
+  >> "$SG_EVENTS_FILE" 2>/dev/null
+
+# Track active subagent count (BUG FIX: uses _sg_with_lock instead of undefined _warden_with_lock)
+if [ -n "$SESSION_ID" ]; then
+  _increment_count() {
+    PREV_COUNT=0
+    if [ -f "$SUBAGENT_COUNT_FILE" ]; then
+      IFS='|' read -r PREV_SESSION PREV_COUNT _PREV_TS < "$SUBAGENT_COUNT_FILE"
+      [ "$PREV_SESSION" != "$SESSION_ID" ] && PREV_COUNT=0
+    fi
+    [[ "$PREV_COUNT" =~ ^[0-9]+$ ]] || PREV_COUNT=0
+    printf '%s|%s|%s\n' "$SESSION_ID" "$((PREV_COUNT + 1))" "$EPOCH" > "$SUBAGENT_COUNT_FILE"
+  }
+  _sg_with_lock "$SG_STATE_DIR/subagent-count.lock.d" _increment_count
+fi
+
+# Type-specific guidance
+GUIDANCE=""
+case "$AGENT_TYPE" in
+  Explore)
+    GUIDANCE="Pattern: tree -> Glob -> Grep -> Read. Budget: 30 calls / 80KB output. Native tools only. BATCH: issue multiple Read/Glob/Grep calls in a single response when targets are independent. OUTPUT: max 1500 tokens. Bullet list only."
+    ;;
+  Plan)
+    GUIDANCE="Pattern: structure -> patterns -> proposal. Budget: 30 calls / 80KB output. Read-only. BATCH: issue multiple Read calls in a single response. OUTPUT: max 2000 tokens. Numbered implementation steps only."
+    ;;
+  general-purpose)
+    GUIDANCE="Pattern: explore -> plan -> execute. Budget: 35 calls / 120KB output. BATCH: issue multiple independent tool calls in a single response. OUTPUT: max 2000 tokens. Concise results only."
+    ;;
+  code-reviewer|security-auditor)
+    GUIDANCE="Pattern: scope -> grep -> read. Budget: 25-30 calls / 100KB output. Read-only. BATCH: after scoping files, Read ALL target files in a single response. OUTPUT: max 2000 tokens. Bullet findings with file:line refs."
+    ;;
+  deep-debugger)
+    GUIDANCE="Pattern: reproduce -> narrow -> instrument. Budget: 40 calls / 150KB output. BATCH: issue multiple Read/Grep calls in a single response. OUTPUT: max 2000 tokens. Root cause + evidence only."
+    ;;
+  refactor|architect|strategist|nix-expert|git-ops|test-runner)
+    GUIDANCE="Follow agent-specific workflow. Budget: 25-35 calls / 100-120KB output. BATCH: issue multiple independent tool calls in a single response. OUTPUT: max 2000 tokens."
+    ;;
+esac
+
+if [[ -n "$GUIDANCE" ]]; then
+  jq -n --arg guidance "$GUIDANCE" \
+    '{"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": $guidance}}'
+fi
+
+exit 0

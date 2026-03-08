@@ -1,0 +1,11 @@
+[Unit]
+Description=agent-safe-guard native daemon socket
+
+[Socket]
+ListenSequentialPacket=%t/agent-safe-guard/sgd.sock
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

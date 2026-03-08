@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# subagent-stop: Budget reclamation + metrics
+set -euo pipefail
+
+source "${BASH_SOURCE[0]%/*}/lib/common.sh"
+
+SUBAGENT_COUNT_FILE="$SG_STATE_DIR/subagent-count"
+
+_sg_read_input || exit 0
+
+IFS=$'\t' read -r AGENT_ID SESSION_ID WORKTREE_PATH < <(
+    printf '%s' "$SG_INPUT" | jq -r '[.agent_id // "unknown", .session_id // "", .worktree_path // ""] | @tsv' 2>/dev/null
+) || exit 0
+
+AGENT_ID=$(_sg_sanitize_id "$AGENT_ID")
+SESSION_ID=$(_sg_sanitize_id "$SESSION_ID")
+[[ -z "$AGENT_ID" ]] && AGENT_ID="unknown"
+
+# === BUDGET TRACKING ===
+BYTE_FILE="$SG_SUBAGENT_STATE_DIR/$AGENT_ID.bytes"
+if [[ -f "$BYTE_FILE" ]]; then
+  _RAW=$(cat "$BYTE_FILE" 2>/dev/null || echo "0")
+  _TOTAL_BYTES="${_RAW%%|*}"
+  [[ "$_TOTAL_BYTES" =~ ^[0-9]+$ ]] || _TOTAL_BYTES=0
+  if (( _TOTAL_BYTES > 0 )); then
+    _sg_budget_update $(( _TOTAL_BYTES * 10 / 35 ))
+  fi
+fi
+
+# === METRICS ===
+START_FILE="$SG_SUBAGENT_STATE_DIR/$AGENT_ID.start"
+if [ -f "$START_FILE" ]; then
+  START_TIME=$(cat "$START_FILE")
+  END_TIME=$(date +%s)
+  DURATION=$((END_TIME - START_TIME))
+  AGENT_TYPE=$(grep 'AGENT_TYPE=' "$SG_SUBAGENT_STATE_DIR/$AGENT_ID" 2>/dev/null | head -1 | cut -d= -f2 || echo "unknown")
+
+  _TS=$((_SG_NOW_S - _SG_SESSION_START_S))
+  _HAS_WORKTREE="false"; [[ -n "${WORKTREE_PATH:-}" ]] && _HAS_WORKTREE="true"
+  _AT_SAFE="${AGENT_TYPE//\"/\\\"}"
+  printf '{"timestamp":%d,"event_type":"subagent_stop","tool":"SubagentStop","session_id":"%s","agent_id":"%s","agent_type":"%s","duration_seconds":%d,"has_worktree":%s}\n' \
+    "$_TS" "$SESSION_ID" "$AGENT_ID" "$_AT_SAFE" "$DURATION" "$_HAS_WORKTREE" \
+    >> "$SG_EVENTS_FILE" 2>/dev/null
+fi
+
+# Decrement active subagent count (BUG FIX: uses _sg_with_lock)
+if [ -n "$SESSION_ID" ] && [ -f "$SUBAGENT_COUNT_FILE" ]; then
+  _decrement_count() {
+    IFS='|' read -r PREV_SESSION PREV_COUNT _PREV_TS < "$SUBAGENT_COUNT_FILE"
+    if [ "$PREV_SESSION" = "$SESSION_ID" ]; then
+      [[ "$PREV_COUNT" =~ ^[0-9]+$ ]] || PREV_COUNT=0
+      [ "$PREV_COUNT" -gt 0 ] && PREV_COUNT=$((PREV_COUNT - 1))
+      printf '%s|%s|%s\n' "$SESSION_ID" "$PREV_COUNT" "$(date +%s)" > "$SUBAGENT_COUNT_FILE"
+    fi
+  }
+  _sg_with_lock "$SG_STATE_DIR/subagent-count.lock.d" _decrement_count
+fi
+
+exit 0

@@ -1,0 +1,91 @@
+set(SG_COMMON_SOURCES
+  src/native/catalog_rule_compiler.cpp
+  src/native/client_runtime.cpp
+  src/native/policy_catalog.cpp
+  src/native/policy_bridge.cpp
+  src/native/json_extract.cpp
+  src/native/policy_post_tool_use.cpp
+  src/native/policy_pre_compact.cpp
+  src/native/policy_pre_tool_use.cpp
+  src/native/policy_read_compress.cpp
+  src/native/policy_permission_request.cpp
+  src/native/policy_stats.cpp
+  src/native/policy_state.cpp
+  src/native/policy_read_guard.cpp
+  src/native/policy_secrets.cpp
+  src/native/rule_audit.cpp
+  src/native/rule_engine.cpp
+  src/native/policy_session_end.cpp
+  src/native/policy_session_start.cpp
+  src/native/policy_stop.cpp
+  src/native/policy_subagent_start.cpp
+  src/native/policy_subagent_stop.cpp
+  src/native/policy_tool_error.cpp
+  src/native/process.cpp
+  src/native/protocol.cpp
+  src/native/systemd_notify.cpp
+  src/native/transport.cpp
+)
+
+add_library(sg_common STATIC ${SG_COMMON_SOURCES})
+target_include_directories(sg_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_options(sg_common PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(sgd src/daemon/main.cpp)
+target_link_libraries(sgd PRIVATE sg_common)
+
+add_executable(sg-hook-pre-tool-use src/clients/pre_tool_use_main.cpp)
+target_link_libraries(sg-hook-pre-tool-use PRIVATE sg_common)
+
+add_executable(sg-hook-post-tool-use src/clients/post_tool_use_main.cpp)
+target_link_libraries(sg-hook-post-tool-use PRIVATE sg_common)
+
+add_executable(sg-hook-permission-request src/clients/permission_request_main.cpp)
+target_link_libraries(sg-hook-permission-request PRIVATE sg_common)
+
+add_executable(sg-hook-read-guard src/clients/read_guard_main.cpp)
+target_link_libraries(sg-hook-read-guard PRIVATE sg_common)
+
+add_executable(sg-hook-read-compress src/clients/read_compress_main.cpp)
+target_link_libraries(sg-hook-read-compress PRIVATE sg_common)
+
+add_executable(sg-hook-stop src/clients/stop_main.cpp)
+target_link_libraries(sg-hook-stop PRIVATE sg_common)
+
+add_executable(sg-hook-session-start src/clients/session_start_main.cpp)
+target_link_libraries(sg-hook-session-start PRIVATE sg_common)
+
+add_executable(sg-hook-session-end src/clients/session_end_main.cpp)
+target_link_libraries(sg-hook-session-end PRIVATE sg_common)
+
+add_executable(sg-hook-pre-compact src/clients/pre_compact_main.cpp)
+target_link_libraries(sg-hook-pre-compact PRIVATE sg_common)
+
+add_executable(sg-hook-subagent-start src/clients/subagent_start_main.cpp)
+target_link_libraries(sg-hook-subagent-start PRIVATE sg_common)
+
+add_executable(sg-hook-subagent-stop src/clients/subagent_stop_main.cpp)
+target_link_libraries(sg-hook-subagent-stop PRIVATE sg_common)
+
+add_executable(sg-hook-tool-error src/clients/tool_error_main.cpp)
+target_link_libraries(sg-hook-tool-error PRIVATE sg_common)
+
+add_executable(asg-cli src/tools/asg_cli_main.cpp)
+target_link_libraries(asg-cli PRIVATE sg_common)
+add_executable(asg-statusline src/tools/asg_statusline_main.cpp)
+target_link_libraries(asg-statusline PRIVATE sg_common)
+
+add_executable(asg-install src/tools/asg_install_main.cpp)
+target_link_libraries(asg-install PRIVATE sg_common)
+target_compile_definitions(asg-install PRIVATE SG_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
+
+add_executable(asg-uninstall src/tools/asg_uninstall_main.cpp)
+target_link_libraries(asg-uninstall PRIVATE sg_common)
+
+install(TARGETS sgd sg-hook-pre-tool-use sg-hook-post-tool-use
+                sg-hook-permission-request sg-hook-read-guard
+                sg-hook-read-compress sg-hook-stop sg-hook-session-start
+                sg-hook-session-end sg-hook-pre-compact
+                sg-hook-subagent-start sg-hook-subagent-stop
+                sg-hook-tool-error asg-cli asg-statusline asg-install asg-uninstall
+                RUNTIME DESTINATION bin)

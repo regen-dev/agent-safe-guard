@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# post-tool-use: Track session stats, truncate/suppress large outputs
+set -o pipefail
+
+source "${BASH_SOURCE[0]%/*}/lib/common.sh"
+
+_sg_read_input || exit 0
+
+read -r TOOL_NAME SESSION_ID OUTPUT_SIZE COMMAND < <(
+    printf '%s' "$SG_INPUT" | jq -r '[
+        .tool_name // "",
+        .session_id // "",
+        (.tool_response.content[0].text // "" | length),
+        (.tool_input.command // .tool_input.file_path // .tool_input.pattern // .tool_input.prompt // "")[0:200]
+    ] | @tsv' 2>/dev/null
+) || exit 0
+
+export SG_TOOL_NAME="$TOOL_NAME"
+export SG_COMMAND="$COMMAND"
+export SG_SESSION_ID="$(_sg_sanitize_id "$SESSION_ID")"
+
+[[ "$OUTPUT_SIZE" =~ ^[0-9]+$ ]] || OUTPUT_SIZE=0
+
+# === TOOL OUTPUT SIZE TRACKING ===
+if (( OUTPUT_SIZE > 0 )); then
+    OUTPUT_LINES=0
+    if (( OUTPUT_SIZE <= 51200 )); then
+        OUTPUT_LINES=$(printf '%s' "$SG_INPUT" | jq -r '.tool_response.content[0].text // "" | if . == "" then 0 elif endswith("\n") then split("\n") | length - 1 else split("\n") | length end' 2>/dev/null)
+    else
+        OUTPUT_LINES=$(printf '%s' "$SG_INPUT" | jq -r '.tool_response.content[0].text // ""' 2>/dev/null | head -c 51200 | awk 'END{print NR}')
+        [[ "$OUTPUT_LINES" =~ ^[0-9]+$ ]] || OUTPUT_LINES=0
+        OUTPUT_LINES=$(( OUTPUT_LINES * OUTPUT_SIZE / 51200 ))
+    fi
+    [[ "$OUTPUT_LINES" =~ ^[0-9]+$ ]] || OUTPUT_LINES=0
+    _sg_emit_output_size "$TOOL_NAME" "$OUTPUT_SIZE" "$OUTPUT_LINES" "$COMMAND"
+fi
+
+# === Session state: single file, single read+write ===
+if [[ -n "$SG_SESSION_ID" ]]; then
+    STATE_FILE="$SG_STATE_DIR/session-$SG_SESSION_ID"
+    mkdir -p "$SG_STATE_DIR"
+
+    PREV_COUNT=0; PREV_BYTES=0; PREV_LABEL=""; PREV_TS=0
+    if [[ -f "$STATE_FILE" ]]; then
+        IFS='|' read -r PREV_COUNT PREV_BYTES PREV_LABEL PREV_TS < "$STATE_FILE" 2>/dev/null
+    fi
+    [[ "$PREV_COUNT" =~ ^[0-9]+$ ]] || PREV_COUNT=0
+    [[ "$PREV_BYTES" =~ ^[0-9]+$ ]] || PREV_BYTES=0
+
+    NEW_COUNT=$((PREV_COUNT + 1))
+
+    TOP_LABEL="$PREV_LABEL"
+    TOP_BYTES="$PREV_BYTES"
+    if (( OUTPUT_SIZE > PREV_BYTES )); then
+        TOP_BYTES="$OUTPUT_SIZE"
+        if [[ "$TOOL_NAME" == "Bash" && -n "$COMMAND" ]]; then
+            CMD="${COMMAND#"${COMMAND%%[![:space:]]*}"}"
+            TOP_LABEL="Bash:${CMD%%[[:space:]]*}"
+        else
+            TOP_LABEL="$TOOL_NAME"
+        fi
+    fi
+    TOP_LABEL="${TOP_LABEL//|/_}"
+    printf '%s|%s|%s|%s\n' "$NEW_COUNT" "$TOP_BYTES" "$TOP_LABEL" "$(date +%s)" > "$STATE_FILE"
+
+    # Budget check every 50 calls (state file only, no desktop notification)
+    if (( NEW_COUNT % 50 == 0 )); then
+        ALERT_FILE="$SG_STATE_DIR/budget-alert"
+        UTIL=$(_sg_budget_export 2>/dev/null | jq -r '.utilization // 0' | cut -d. -f1)
+        if [[ "$UTIL" =~ ^[0-9]+$ ]] && (( UTIL >= 90 )); then
+            echo "CRITICAL|$UTIL|$(date +%s)" > "$ALERT_FILE"
+        elif [[ "$UTIL" =~ ^[0-9]+$ ]] && (( UTIL >= 75 )); then
+            PREV_LEVEL=$(cut -d'|' -f1 < "$ALERT_FILE" 2>/dev/null || echo "")
+            [[ "$PREV_LEVEL" != "WARNING" && "$PREV_LEVEL" != "CRITICAL" ]] && {
+                echo "WARNING|$UTIL|$(date +%s)" > "$ALERT_FILE"
+            }
+        fi
+    fi
+fi
+
+# === SUBAGENT CUMULATIVE BYTE TRACKING ===
+TRANSCRIPT_PATH=$(_sg_parse_transcript_path)
+IS_SUBAGENT=false
+AGENT_ID=""
+
+if _sg_is_subagent "$TRANSCRIPT_PATH"; then
+    IS_SUBAGENT=true
+    AGENT_ID=$(_sg_get_agent_id "$TRANSCRIPT_PATH")
+fi
+
+if [[ "$IS_SUBAGENT" == true && -n "$AGENT_ID" ]]; then
+    BYTE_FILE="$SG_SUBAGENT_STATE_DIR/$AGENT_ID.bytes"
+    PREV_BYTES=0
+    if [[ -f "$BYTE_FILE" ]]; then
+        RAW=$(cat "$BYTE_FILE" 2>/dev/null || echo "0")
+        if [[ "$RAW" == *"|"* ]]; then
+            PREV_BYTES=$(echo "$RAW" | cut -d'|' -f1)
+        fi
+        [[ ! "$PREV_BYTES" =~ ^[0-9]+$ ]] && PREV_BYTES=0
+    fi
+    NEW_BYTES=$((PREV_BYTES + OUTPUT_SIZE))
+    printf '%s|%s|%s\n' "$NEW_BYTES" "$TOOL_NAME" "$(date +%s)" > "$BYTE_FILE"
+fi
+
+# === TOOL LATENCY ===
+if _sg_compute_tool_latency "$TOOL_NAME"; then
+    _sg_emit_latency "$TOOL_NAME" "$SG_TOOL_LATENCY_MS" "$COMMAND"
+fi
+
+# === SYSTEM REMINDER STRIP ===
+REMINDER_PRE_STRIPPED=false
+if (( OUTPUT_SIZE > 50 )); then
+    _RAW=$(printf '%s' "$SG_INPUT" | jq -r '.tool_response.content[0].text // ""' 2>/dev/null)
+    case "$_RAW" in
+        *'<system-reminder>'*)
+            _CLEANED=$(printf '%s' "$_RAW" | sed '/^<system-reminder>/,/^<\/system-reminder>/d')
+            _CLEANED=$(printf '%s' "$_CLEANED" | awk 'NF{found=NR} {a[NR]=$0} END{for(i=1;i<=found;i++)print a[i]}')
+            _CLEANED_SIZE=${#_CLEANED}
+            _STRIPPED=$(( ${#_RAW} - _CLEANED_SIZE ))
+            if (( _STRIPPED > 0 )); then
+                _sg_emit_event "truncated" "$OUTPUT_SIZE" "$_CLEANED_SIZE" "system_reminder"
+                case "$TOOL_NAME" in
+                    Bash|Grep|Glob|Task)
+                        OUTPUT="$_CLEANED"
+                        OUTPUT_SIZE="$_CLEANED_SIZE"
+                        REMINDER_PRE_STRIPPED=true
+                        ;;
+                    *)
+                        jq -n --arg text "$_CLEANED" '{"modifyOutput":$text}'
+                        exit 0
+                        ;;
+                esac
+            fi
+            ;;
+    esac
+    unset _RAW _CLEANED _CLEANED_SIZE _STRIPPED
+fi
+
+# === GIT HINT STRIP ===
+if [[ "$TOOL_NAME" == "Bash" ]]; then
+    case "$SG_INPUT" in
+        *'hint: '*)
+            if [[ "$REMINDER_PRE_STRIPPED" != true ]]; then
+                OUTPUT=$(printf '%s' "$SG_INPUT" | jq -r '.tool_response.content[0].text // ""' 2>/dev/null)
+                OUTPUT_SIZE=${#OUTPUT}
+            fi
+            _GIT_CLEANED=$(printf '%s' "$OUTPUT" | grep -v '^hint: ')
+            if (( ${#_GIT_CLEANED} < OUTPUT_SIZE )); then
+                _sg_emit_event "truncated" "$OUTPUT_SIZE" "${#_GIT_CLEANED}" "git_hints"
+                OUTPUT="$_GIT_CLEANED"
+                OUTPUT_SIZE="${#_GIT_CLEANED}"
+                REMINDER_PRE_STRIPPED=true
+            fi
+            unset _GIT_CLEANED
+            ;;
+    esac
+fi
+
+# Truncate large outputs from Bash, Grep, Glob, Task
+case "$TOOL_NAME" in
+    Bash|Grep|Glob|Task) ;;
+    Read)
+        if [[ "$IS_SUBAGENT" != true ]]; then
+            _sg_emit_event "allowed" "$OUTPUT_SIZE" "$OUTPUT_SIZE"; _sg_suppress_ok
+        fi
+        ;;
+    *) _sg_emit_event "allowed" "$OUTPUT_SIZE" "$OUTPUT_SIZE"; _sg_suppress_ok ;;
+esac
+
+_exit_clean_or_suppress() {
+    if [[ "$REMINDER_PRE_STRIPPED" == true ]]; then
+        jq -n --arg text "$OUTPUT" '{"modifyOutput":$text}'
+        exit 0
+    fi
+    _sg_suppress_ok
+}
+
+# Task-specific: extract structured lines
+if [[ "$TOOL_NAME" == "Task" ]] && (( OUTPUT_SIZE > 6144 )); then
+    if [[ "$REMINDER_PRE_STRIPPED" != true ]]; then
+        OUTPUT=$(printf '%s' "$SG_INPUT" | jq -r '.tool_response.content[0].text // ""' 2>/dev/null)
+        OUTPUT_SIZE=${#OUTPUT}
+    fi
+    if (( OUTPUT_SIZE > 6144 )); then
+        STRUCTURED=$(printf '%s' "$OUTPUT" | awk '
+            /^[-*] /           { print; next }
+            /^[0-9]+[.)]/      { print; next }
+            /^#{1,4} /         { print; next }
+            /^[|]/             { print; next }
+            /^[[:space:]]*[-*] / { print; next }
+            /^[a-zA-Z_.\/ ]*\.[a-z]{1,4}:[0-9]/ { print; next }
+        ' | head -120)
+        STRUCT_SIZE=${#STRUCTURED}
+        if (( STRUCT_SIZE > 200 && STRUCT_SIZE < OUTPUT_SIZE )); then
+            _sg_emit_event "truncated" "$OUTPUT_SIZE" "$STRUCT_SIZE" "task_structured"
+            jq -n --arg text "${STRUCTURED}
+
+[Agent output compressed: $((OUTPUT_SIZE/1024))KB -> $((STRUCT_SIZE/1024))KB structured lines]" \
+                '{"modifyOutput":$text}'
+            exit 0
+        fi
+    fi
+fi
+
+# Fast path: small outputs
+TRUNCATION_THRESHOLD=$SG_TRUNCATE_BYTES
+if [[ "$IS_SUBAGENT" == true && "$TOOL_NAME" == "Read" ]]; then
+    TRUNCATION_THRESHOLD=$SG_SUBAGENT_READ_BYTES
+fi
+(( TRUNCATION_THRESHOLD > SG_SUPPRESS_BYTES )) && TRUNCATION_THRESHOLD=$SG_SUPPRESS_BYTES
+(( OUTPUT_SIZE <= TRUNCATION_THRESHOLD )) && { _sg_emit_event "allowed" "$OUTPUT_SIZE" "$OUTPUT_SIZE"; _exit_clean_or_suppress; }
+
+if [[ "$REMINDER_PRE_STRIPPED" != true ]]; then
+    OUTPUT=$(printf '%s' "$SG_INPUT" | jq -r '.tool_response.content[0].text // ""' 2>/dev/null)
+    OUTPUT_SIZE=${#OUTPUT}
+    (( OUTPUT_SIZE <= TRUNCATION_THRESHOLD )) && { _sg_emit_event "allowed" "$OUTPUT_SIZE" "$OUTPUT_SIZE"; _exit_clean_or_suppress; }
+fi
+
+# Binary check
+if printf '%s' "$SG_INPUT" | jq -r '.tool_response.content[0].text // ""' 2>/dev/null | od -An -tx1 | grep -q ' 00'; then
+    _sg_emit_event "truncated" "$OUTPUT_SIZE" 50 "binary_output"
+    jq -n --arg text "[Binary output: $((OUTPUT_SIZE/1024))KB. Use 'file' or redirect.]" '{"modifyOutput":$text}'
+    exit 0
+fi
+
+# >500KB: suppress entirely
+if (( OUTPUT_SIZE > SG_SUPPRESS_BYTES )); then
+    _sg_emit_event "truncated" "$OUTPUT_SIZE" 60 "output_suppressed"
+    jq -n --arg text "[Output too large: $((OUTPUT_SIZE/1048576))MB. Use | head or redirect.]" '{"modifyOutput":$text}'
+    exit 0
+fi
+
+# Truncate
+HEAD="${OUTPUT:0:8000}"
+if [[ "$COMMAND" == *"nm "* || "$COMMAND" == *" nm" || \
+      "$COMMAND" == *"strings "* || "$COMMAND" == *"otool"* || \
+      "$COMMAND" == *"jtool"* || "$COMMAND" == *"class-dump"* ]]; then
+    FINAL="${HEAD}"
+    FINAL_SIZE=${#FINAL}
+    TAIL_NOTE="head-only"
+else
+    TAIL="${OUTPUT: -2000}"
+    FINAL="${HEAD}
+... [$((OUTPUT_SIZE/1024))KB truncated to 10KB] ...
+${TAIL}"
+    FINAL_SIZE=${#FINAL}
+    TAIL_NOTE="output_truncated"
+fi
+_sg_emit_event "truncated" "$OUTPUT_SIZE" "$FINAL_SIZE" "$TAIL_NOTE"
+jq -n --arg text "$FINAL" '{"modifyOutput":$text}'

@@ -1,0 +1,33 @@
+# Coverage output
+coverage/
+/tmp/
+*.heapsnapshot
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Coverage trace files
+/tmp/sg-cov.txt
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Environment / secrets (never commit)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# AI assistant project instructions (private)
+CLAUDE.md
+AGENTS.md
