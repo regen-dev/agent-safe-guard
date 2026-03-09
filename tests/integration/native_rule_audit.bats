@@ -141,8 +141,8 @@ EOF
     assert_output --partial "suppressOutput"
     refute_output --partial "permissionDecision"
 
-    run jq -ec 'select(.event_type=="rule_match" and .rule_id==100200)' "$SG_EVENTS_FILE"
-    assert_failure
+    run jq -ec 'select(.event_type=="rule_match" and .rule_id==100200 and .disposition=="bypassed" and .enforced==false)' "$SG_EVENTS_FILE"
+    assert_success
 }
 
 @test "rule audit materializes policy stats and scaffold files" {

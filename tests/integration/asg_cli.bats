@@ -73,7 +73,7 @@ EOF
     run "$CLI_BIN" --catalog-list
     assert_success
     assert_output --partial "GitHub Core Catalog"
-    assert_output --partial "raw.githubusercontent.com/regen-dev/agent-safe-guard-rules/rules-v0.2.0/rules/catalogs/github-core.json"
+    assert_output --partial "raw.githubusercontent.com/regen-dev/agent-safe-guard-rules/main/rules/catalogs/github-core.json"
 }
 
 @test "asg-cli default catalog scaffold can be overridden by env before first run" {
@@ -271,19 +271,19 @@ EOF
     assert_file_not_exist "$HOME/.claude/.safeguard/policy/installed/vendor-shell-pack.json"
 }
 
-@test "asg-cli migrates legacy official catalog URL to the tagged bootstrap URL" {
+@test "asg-cli migrates legacy tagged catalog URL to the main bootstrap URL" {
     mkdir -p "$HOME/.claude/.safeguard/policy"
     cat > "$HOME/.claude/.safeguard/policy/catalogs.json" <<'EOF'
-{"version":1,"catalogs":[{"catalog_id":"github-core","display_name":"GitHub Core Catalog","source_url":"https://raw.githubusercontent.com/regen-dev/agent-safe-guard-rules/main/rules/catalogs/github-core.json","cache_path":"/tmp/legacy.json","added_at":1,"last_synced_at":0}]}
+{"version":1,"catalogs":[{"catalog_id":"github-core","display_name":"GitHub Core Catalog","source_url":"https://raw.githubusercontent.com/regen-dev/agent-safe-guard-rules/rules-v0.2.0/rules/catalogs/github-core.json","cache_path":"/tmp/legacy.json","added_at":1,"last_synced_at":0}]}
 EOF
 
     run "$CLI_BIN" --catalog-list
     assert_success
-    assert_output --partial "rules-v0.2.0/rules/catalogs/github-core.json"
+    assert_output --partial "main/rules/catalogs/github-core.json"
 
     run jq -r '.catalogs[0].source_url' "$HOME/.claude/.safeguard/policy/catalogs.json"
     assert_success
-    assert_output "https://raw.githubusercontent.com/regen-dev/agent-safe-guard-rules/rules-v0.2.0/rules/catalogs/github-core.json"
+    assert_output "https://raw.githubusercontent.com/regen-dev/agent-safe-guard-rules/main/rules/catalogs/github-core.json"
 }
 
 @test "asg-cli rejects invalid local manifest schema" {

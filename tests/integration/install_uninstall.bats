@@ -214,7 +214,7 @@ EOF
     assert_exist "$HOME/.claude/.safeguard/policy/catalogs.json"
     run jq -r '.catalogs[0].source_url' "$HOME/.claude/.safeguard/policy/catalogs.json"
     assert_success
-    assert_output "https://raw.githubusercontent.com/regen-dev/agent-safe-guard-rules/rules-v0.3.0/rules/catalogs/github-core.json"
+    assert_output "https://raw.githubusercontent.com/regen-dev/agent-safe-guard-rules/main/rules/catalogs/github-core.json"
 }
 
 @test "install --feature-ui updates features.env selections" {

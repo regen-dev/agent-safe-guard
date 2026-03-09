@@ -31,11 +31,62 @@ jobs:
       - name: Build
         run: cmake --build build/native -j2
 
-      - name: Test suite
-        run: make test
+      - name: Unit tests
+        run: make test-unit
 
-      - name: Native smoke
-        run: make test-native-pre-smoke
+      - name: Integration — asg-cli, install, statusline
+        run: |
+          ./tests/test_helper/bats-core/bin/bats --jobs 4 --timing --print-output-on-failure \
+            tests/integration/asg_cli.bats \
+            tests/integration/install_uninstall.bats \
+            tests/integration/statusline.bats
+
+      - name: Native — pre-tool-use (full)
+        run: |
+          SOCK=/tmp/agent-safe-guard/sgd-pre-full.sock
+          mkdir -p /tmp/agent-safe-guard
+          rm -f "$SOCK"
+          ./build/native/native/sgd --socket "$SOCK" >/tmp/sgd-pre-full.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null; kill -9 $PID 2>/dev/null' EXIT
+          for i in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
+          SG_PRE_TOOL_HOOK=./build/native/native/sg-hook-pre-tool-use \
+          SG_DAEMON_SOCKET="$SOCK" \
+          ./tests/test_helper/bats-core/bin/bats --jobs 1 --timing --print-output-on-failure \
+            tests/integration/pre_tool_use.bats
+
+      - name: Native smoke — post-tool-use
+        run: make test-native-post-smoke
+
+      - name: Native smoke — permission-request
+        run: make test-native-permission-smoke
+
+      - name: Native smoke — read-guard
+        run: make test-native-read-guard-smoke
+
+      - name: Native smoke — read-compress
+        run: make test-native-read-compress-smoke
+
+      - name: Native smoke — stop
+        run: make test-native-stop-smoke
+
+      - name: Native smoke — session-start
+        run: make test-native-session-start-smoke
+
+      - name: Native smoke — session-end
+        run: make test-native-session-end-smoke
+
+      - name: Native smoke — pre-compact
+        run: make test-native-pre-compact-smoke
+
+      - name: Native smoke — subagent-start
+        run: make test-native-subagent-start-smoke
+
+      - name: Native smoke — subagent-stop
+        run: make test-native-subagent-stop-smoke
+
+      - name: Native smoke — tool-error
+        run: make test-native-tool-error-smoke
 
       - name: Native rule audit
         run: make test-native-rule-audit
