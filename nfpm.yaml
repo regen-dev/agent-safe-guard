@@ -1,0 +1,68 @@
+name: agent-safe-guard
+arch: amd64
+platform: linux
+version: 1.0.0
+maintainer: regen-dev
+description: Native safety hooks for Claude Code
+vendor: regen-dev
+homepage: https://github.com/regen-dev/agent-safe-guard
+license: MIT
+section: utils
+priority: optional
+
+depends:
+  - jq
+
+contents:
+  # Daemon
+  - src: staging/bin/sgd
+    dst: /usr/local/lib/agent-safe-guard/sgd
+
+  # Hook clients
+  - src: staging/bin/sg-hook-pre-tool-use
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-pre-tool-use
+  - src: staging/bin/sg-hook-post-tool-use
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-post-tool-use
+  - src: staging/bin/sg-hook-permission-request
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-permission-request
+  - src: staging/bin/sg-hook-read-guard
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-read-guard
+  - src: staging/bin/sg-hook-read-compress
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-read-compress
+  - src: staging/bin/sg-hook-stop
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-stop
+  - src: staging/bin/sg-hook-session-start
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-session-start
+  - src: staging/bin/sg-hook-session-end
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-session-end
+  - src: staging/bin/sg-hook-pre-compact
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-pre-compact
+  - src: staging/bin/sg-hook-subagent-start
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-subagent-start
+  - src: staging/bin/sg-hook-subagent-stop
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-subagent-stop
+  - src: staging/bin/sg-hook-tool-error
+    dst: /usr/local/lib/agent-safe-guard/sg-hook-tool-error
+
+  # CLI tools
+  - src: staging/bin/asg-cli
+    dst: /usr/local/bin/asg-cli
+  - src: staging/bin/asg-statusline
+    dst: /usr/local/bin/asg-statusline
+  - src: staging/bin/asg-install
+    dst: /usr/local/bin/asg-install
+  - src: staging/bin/asg-uninstall
+    dst: /usr/local/bin/asg-uninstall
+
+  # Systemd units (user-level)
+  - src: systemd/sgd.service
+    dst: /usr/local/lib/agent-safe-guard/systemd/sgd.service
+    type: config
+  - src: systemd/sgd.socket
+    dst: /usr/local/lib/agent-safe-guard/systemd/sgd.socket
+    type: config
+
+  # Default config
+  - src: config.env
+    dst: /usr/local/lib/agent-safe-guard/config.env
+    type: config

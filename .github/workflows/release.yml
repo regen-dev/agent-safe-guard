@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Create/update release PR
+        id: release
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
+        with:
+          release-type: simple
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Build static binaries (musl)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            alpine:latest sh -c '
+              apk add --no-cache cmake g++ make linux-headers
+              cmake -S . -B build/release \
+                -DSG_BUILD_NATIVE=ON \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_EXE_LINKER_FLAGS="-static" \
+                -DCMAKE_INSTALL_PREFIX=/usr/local
+              cmake --build build/release -j$(nproc)
+              DESTDIR=/src/staging cmake --install build/release --prefix ""
+            '
+
+      - name: Verify binaries are static
+        run: |
+          file staging/bin/sgd | grep -q "statically linked"
+          file staging/bin/asg-cli | grep -q "statically linked"
+
+      - name: Smoke test
+        run: |
+          staging/bin/sgd --version || true
+          staging/bin/asg-install --help | head -3
+
+      - name: Create tarball
+        run: |
+          mkdir -p dist
+          tar czf "dist/agent-safe-guard-${VERSION}-linux-amd64.tar.gz" \
+            -C staging/bin . \
+            --transform 's,^\./,agent-safe-guard/,'
+
+      - name: Package .deb
+        run: |
+          # Install nfpm
+          curl -sfL https://github.com/goreleaser/nfpm/releases/latest/download/nfpm_linux_amd64.tar.gz \
+            | tar xz -C /usr/local/bin nfpm
+          chmod +x /usr/local/bin/nfpm
+
+          # Build deb
+          nfpm pkg --packager deb \
+            --target "dist/agent-safe-guard_${VERSION}_amd64.deb"
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+            dist/agent-safe-guard-${VERSION}-linux-amd64.tar.gz \
+            dist/agent-safe-guard_${VERSION}_amd64.deb \
+            --clobber
+
+      - name: Attest tarball provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/agent-safe-guard-${{ env.VERSION }}-linux-amd64.tar.gz
+
+      - name: Attest deb provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/agent-safe-guard_${{ env.VERSION }}_amd64.deb
