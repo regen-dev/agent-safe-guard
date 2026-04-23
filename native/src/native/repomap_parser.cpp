@@ -1,5 +1,7 @@
 #include "sg/repomap_parser.hpp"
 
+#include "sg/repomap_queries_embed.hpp"
+
 #include <tree_sitter/api.h>
 
 #include <cerrno>
@@ -8,6 +10,8 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 
 extern "C" {
 const TSLanguage* tree_sitter_typescript();
@@ -24,8 +28,6 @@ bool HasSuffix(std::string_view path, std::string_view suffix) {
 }
 
 std::size_t CountNodes(TSNode root) {
-  // Iterative preorder walk — tree-sitter has no direct "tree size" accessor,
-  // so we visit every node once using ts_tree_cursor_goto_*.
   std::size_t n = 0;
   TSTreeCursor cursor = ts_tree_cursor_new(root);
   while (true) {
@@ -53,6 +55,96 @@ bool ReadEntireFile(std::string_view path, std::string* out, std::string* err) {
   return true;
 }
 
+// Capture names are like "name.definition.function" / "name.reference.type".
+// Return TagKind + subkind ("function"), or nullopt if the capture should be
+// ignored (e.g. container captures without a name. prefix).
+struct CaptureInfo {
+  TagKind kind;
+  std::string subkind;
+};
+
+bool DecodeCaptureName(std::string_view capture, CaptureInfo* out) {
+  constexpr std::string_view kDefPrefix = "name.definition.";
+  constexpr std::string_view kRefPrefix = "name.reference.";
+  if (capture.substr(0, kDefPrefix.size()) == kDefPrefix) {
+    out->kind = TagKind::kDef;
+    out->subkind = std::string(capture.substr(kDefPrefix.size()));
+    return true;
+  }
+  if (capture.substr(0, kRefPrefix.size()) == kRefPrefix) {
+    out->kind = TagKind::kRef;
+    out->subkind = std::string(capture.substr(kRefPrefix.size()));
+    return true;
+  }
+  return false;
+}
+
+bool IsNoiseName(std::string_view name, TagKind kind) {
+  if (name.empty()) return true;
+  if (name == "constructor") return true;
+  if (kind == TagKind::kRef) {
+    static const std::unordered_set<std::string_view> kNoise = {
+        "require", "Symbol",  "Boolean", "Number", "String", "Array",
+        "Object",  "Error",   "Promise", "Map",    "Set",    "Date",
+        "Math",    "JSON",    "console", "parseInt", "parseFloat",
+        "isNaN",   "isFinite",
+    };
+    if (kNoise.contains(name)) return true;
+  }
+  return false;
+}
+
+bool ExtractTags(const TSLanguage* lang, const std::string& source,
+                 TSNode root, const char* query_source,
+                 std::vector<Tag>* out, std::string* err) {
+  std::uint32_t error_offset = 0;
+  TSQueryError query_error = TSQueryErrorNone;
+  TSQuery* query = ts_query_new(lang, query_source,
+                                static_cast<std::uint32_t>(std::strlen(query_source)),
+                                &error_offset, &query_error);
+  if (query == nullptr) {
+    *err = "tree-sitter query compile failed at offset " +
+           std::to_string(error_offset) + " (error=" +
+           std::to_string(query_error) + ")";
+    return false;
+  }
+
+  TSQueryCursor* cursor = ts_query_cursor_new();
+  ts_query_cursor_exec(cursor, query, root);
+
+  TSQueryMatch match;
+  while (ts_query_cursor_next_match(cursor, &match)) {
+    for (std::uint16_t i = 0; i < match.capture_count; ++i) {
+      const TSQueryCapture& cap = match.captures[i];
+      std::uint32_t name_len = 0;
+      const char* name_ptr =
+          ts_query_capture_name_for_id(query, cap.index, &name_len);
+      const std::string_view capture_name(name_ptr, name_len);
+
+      CaptureInfo info;
+      if (!DecodeCaptureName(capture_name, &info)) continue;
+
+      const std::uint32_t start = ts_node_start_byte(cap.node);
+      const std::uint32_t end = ts_node_end_byte(cap.node);
+      if (end > source.size() || start >= end) continue;
+
+      std::string name = source.substr(start, end - start);
+      if (IsNoiseName(name, info.kind)) continue;
+
+      Tag tag;
+      tag.line = ts_node_start_point(cap.node).row + 1;
+      tag.kind = info.kind;
+      tag.subkind = std::move(info.subkind);
+      tag.name = std::move(name);
+      out->push_back(std::move(tag));
+    }
+  }
+
+  ts_query_cursor_delete(cursor);
+  ts_query_delete(query);
+  return true;
+}
+
 }  // namespace
 
 const char* LanguageName(Language lang) {
@@ -60,6 +152,14 @@ const char* LanguageName(Language lang) {
     case Language::kTypeScript: return "typescript";
     case Language::kJavaScript: return "javascript";
     case Language::kUnknown:    return "unknown";
+  }
+  return "unknown";
+}
+
+const char* TagKindName(TagKind kind) {
+  switch (kind) {
+    case TagKind::kDef: return "def";
+    case TagKind::kRef: return "ref";
   }
   return "unknown";
 }
@@ -76,7 +176,7 @@ Language DetectLanguage(std::string_view path) {
   return Language::kUnknown;
 }
 
-ParseResult ParseFile(std::string_view path) {
+ParseResult ParseFile(std::string_view path, bool extract_tags) {
   ParseResult result;
   result.stats.language = DetectLanguage(path);
   if (result.stats.language == Language::kUnknown) {
@@ -105,7 +205,7 @@ ParseResult ParseFile(std::string_view path) {
   }
 
   TSTree* tree = ts_parser_parse_string(parser, nullptr, source.data(),
-                                        static_cast<uint32_t>(source.size()));
+                                        static_cast<std::uint32_t>(source.size()));
   if (tree == nullptr) {
     ts_parser_delete(parser);
     result.error = "tree-sitter: parse returned null tree";
@@ -114,8 +214,22 @@ ParseResult ParseFile(std::string_view path) {
 
   const TSNode root = ts_tree_root_node(tree);
   result.stats.node_count = CountNodes(root);
-  result.stats.ok = true;
 
+  if (extract_tags) {
+    const char* query_src =
+        result.stats.language == Language::kTypeScript
+            ? embedded::kTypeScriptTagsQuery
+            : embedded::kJavaScriptTagsQuery;
+    if (!ExtractTags(lang, source, root, query_src, &result.tags,
+                     &result.error)) {
+      ts_tree_delete(tree);
+      ts_parser_delete(parser);
+      return result;
+    }
+    result.stats.tag_count = result.tags.size();
+  }
+
+  result.stats.ok = true;
   ts_tree_delete(tree);
   ts_parser_delete(parser);
   return result;

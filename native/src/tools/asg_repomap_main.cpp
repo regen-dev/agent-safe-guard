@@ -12,14 +12,17 @@ int PrintUsage(FILE* stream) {
   std::fputs(
       "usage: asg-repomap <command> [options]\n"
       "\n"
-      "commands (phase 0 — parse smoke only):\n"
-      "  build --file <path>   parse one source file and print node count\n",
+      "commands:\n"
+      "  build --file <path> [--tags]   parse one source file\n"
+      "                                 (default: node count only; --tags also\n"
+      "                                  prints one `line kind subkind name` per tag)\n",
       stream);
   return 2;
 }
 
 int RunBuild(int argc, char** argv) {
   std::string file;
+  bool want_tags = false;
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg(argv[i]);
     if (arg == "--file") {
@@ -30,6 +33,10 @@ int RunBuild(int argc, char** argv) {
       file = argv[++i];
       continue;
     }
+    if (arg == "--tags") {
+      want_tags = true;
+      continue;
+    }
     std::fprintf(stderr, "error: unknown argument: %s\n", argv[i]);
     return 2;
   }
@@ -38,14 +45,22 @@ int RunBuild(int argc, char** argv) {
     return 2;
   }
 
-  const auto result = sg::repomap::ParseFile(file);
+  const auto result = sg::repomap::ParseFile(file, want_tags);
   if (!result.stats.ok) {
     std::fprintf(stderr, "error: %s\n", result.error.c_str());
     return 1;
   }
-  std::printf("ok lang=%s bytes=%zu node_count=%zu\n",
+  std::printf("ok lang=%s bytes=%zu node_count=%zu tag_count=%zu\n",
               sg::repomap::LanguageName(result.stats.language),
-              result.stats.bytes, result.stats.node_count);
+              result.stats.bytes, result.stats.node_count,
+              result.stats.tag_count);
+  if (want_tags) {
+    for (const auto& tag : result.tags) {
+      std::printf("%u %s %s %s\n", tag.line,
+                  sg::repomap::TagKindName(tag.kind), tag.subkind.c_str(),
+                  tag.name.c_str());
+    }
+  }
   return 0;
 }
 

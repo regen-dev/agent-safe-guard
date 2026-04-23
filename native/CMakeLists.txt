@@ -87,9 +87,26 @@ target_link_libraries(asg-uninstall PRIVATE sg_common)
 # sg_common / safety-critical code. The daemon does not link it yet; that
 # happens in Phase 5 when session-start wires up the render query.
 if(SG_BUILD_REPOMAP)
+  # Embed tag queries (.scm) into a generated C++ header so the daemon has
+  # zero runtime lookup for them. file(READ) + file(WRITE) with a raw string
+  # delimiter is safer than configure_file(@ONLY) because the queries use
+  # @name.* captures that could collide with @VAR@ substitution.
+  set(SG_REPOMAP_EMBED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/sg/repomap_queries_embed.hpp")
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/queries/typescript-tags.scm" SG_REPOMAP_TS_QUERY)
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/queries/javascript-tags.scm" SG_REPOMAP_JS_QUERY)
+  file(WRITE "${SG_REPOMAP_EMBED_HEADER}"
+"// Auto-generated from native/queries/*.scm — do not edit by hand.\n"
+"#pragma once\n"
+"namespace sg::repomap::embedded {\n"
+"inline constexpr char kTypeScriptTagsQuery[] = R\"SGRMQUERY(${SG_REPOMAP_TS_QUERY})SGRMQUERY\";\n"
+"inline constexpr char kJavaScriptTagsQuery[] = R\"SGRMQUERY(${SG_REPOMAP_JS_QUERY})SGRMQUERY\";\n"
+"}  // namespace sg::repomap::embedded\n")
+
   add_library(sg_repomap STATIC
     src/native/repomap_parser.cpp)
-  target_include_directories(sg_repomap PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_include_directories(sg_repomap
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
   target_compile_options(sg_repomap PRIVATE -Wall -Wextra -Wpedantic)
   target_link_libraries(sg_repomap PUBLIC
     tree_sitter tree_sitter_typescript tree_sitter_javascript)

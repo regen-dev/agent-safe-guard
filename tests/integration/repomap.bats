@@ -57,3 +57,44 @@ teardown() {
     assert_failure
     assert_output --partial "usage:"
 }
+
+# ==============================================================================
+# PHASE 1 — tag extraction
+# ==============================================================================
+
+@test "asg-repomap build --tags prints def/ref lines for ts fixture" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" build --file "$TS_FIXTURE" --tags
+    assert_success
+    assert_output --partial "def class AuthService"
+    assert_output --partial "def method login"
+    assert_output --partial "def method logout"
+    assert_output --partial "def function createAuth"
+    assert_output --partial "ref class AuthService"
+    refute_output --partial "def method constructor"
+}
+
+@test "asg-repomap build --tags prints def lines for js fixture" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" build --file "$JS_FIXTURE" --tags
+    assert_success
+    assert_output --partial "def function greet"
+}
+
+@test "asg-repomap build --tags on crossref fixture finds cross-file ref" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" build --file "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref/api.ts" --tags
+    assert_success
+    assert_output --partial "def function handleLogin"
+    assert_output --partial "ref class AuthService"
+    assert_output --partial "ref call login"
+}
+
+@test "asg-repomap build without --tags omits tag lines" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" build --file "$TS_FIXTURE"
+    assert_success
+    refute_output --partial "def class"
+    refute_output --partial "ref call"
+    assert_output --partial "tag_count=0"
+}

@@ -1,38 +1,52 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace sg::repomap {
 
-enum class Language {
+enum class Language : std::uint8_t {
   kUnknown = 0,
   kTypeScript,
   kJavaScript,
 };
 
-const char* LanguageName(Language lang);
+enum class TagKind : std::uint8_t {
+  kDef = 1,
+  kRef = 2,
+};
 
-// Detect language from a filename extension. Recognises .ts/.mts/.cts as
-// TypeScript and .js/.mjs/.cjs as JavaScript. Everything else is kUnknown.
-// TSX is intentionally not supported in the MVP (see AST.md phase 8).
-Language DetectLanguage(std::string_view path);
+struct Tag {
+  std::uint32_t line = 0;   // 1-based source line
+  TagKind kind = TagKind::kDef;
+  std::string subkind;      // "function", "method", "class", "type", ...
+  std::string name;         // identifier text
+};
 
 struct ParseStats {
   Language language = Language::kUnknown;
   std::size_t bytes = 0;
   std::size_t node_count = 0;
+  std::size_t tag_count = 0;
   bool ok = false;
 };
 
 struct ParseResult {
   ParseStats stats;
-  std::string error;  // populated when stats.ok == false
+  std::vector<Tag> tags;
+  std::string error;
 };
 
-// Phase 0 stub: parse a single source file with the matching grammar and
-// return the total tree-sitter node count. No tag extraction yet.
-ParseResult ParseFile(std::string_view path);
+const char* LanguageName(Language lang);
+const char* TagKindName(TagKind kind);
+
+Language DetectLanguage(std::string_view path);
+
+// Parse a source file and return node count + extracted tags.
+// If only node_count is needed, pass extract_tags=false.
+ParseResult ParseFile(std::string_view path, bool extract_tags = true);
 
 }  // namespace sg::repomap
