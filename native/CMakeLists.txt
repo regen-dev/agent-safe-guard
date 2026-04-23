@@ -103,7 +103,8 @@ if(SG_BUILD_REPOMAP)
 "}  // namespace sg::repomap::embedded\n")
 
   add_library(sg_repomap STATIC
-    src/native/repomap_parser.cpp)
+    src/native/repomap_parser.cpp
+    src/native/repomap_index.cpp)
   target_include_directories(sg_repomap
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)

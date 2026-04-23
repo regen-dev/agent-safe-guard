@@ -98,3 +98,48 @@ teardown() {
     refute_output --partial "ref call"
     assert_output --partial "tag_count=0"
 }
+
+# ==============================================================================
+# PHASE 2 — index + PageRank
+# ==============================================================================
+
+@test "asg-repomap rank --root prints ranked file list" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" rank --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref"
+    assert_success
+    assert_output --partial "ok files=3"
+    assert_line --index 1 --regexp '^0\.[0-9]+ auth\.ts$'
+}
+
+@test "asg-repomap rank: most-referenced file ranks highest" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    # auth.ts defines AuthService used by both api.ts and gateway.ts →
+    # should outrank api.ts (used only by gateway.ts) and gateway.ts (leaf).
+    run "$REPOMAP_BIN" rank --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref"
+    assert_success
+    local auth_line api_line gw_line
+    auth_line=$(echo "$output" | grep -n 'auth.ts$' | head -1 | cut -d: -f1)
+    api_line=$(echo "$output"  | grep -n 'api.ts$'  | head -1 | cut -d: -f1)
+    gw_line=$(echo "$output"   | grep -n 'gateway.ts$' | head -1 | cut -d: -f1)
+    [ -n "$auth_line" ] && [ -n "$api_line" ] && [ -n "$gw_line" ]
+    [ "$auth_line" -lt "$api_line" ]
+    [ "$api_line"  -lt "$gw_line"  ]
+}
+
+@test "asg-repomap rank: scores sum to approximately 1" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" rank --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref"
+    assert_success
+    local sum
+    sum=$(echo "$output" | awk '/^[0-9]+\.[0-9]+ / {s += $1} END {printf "%.4f", s}')
+    # Sum must be in [0.99, 1.01] — PageRank stochastic invariant.
+    run awk -v s="$sum" 'BEGIN { exit !(s >= 0.99 && s <= 1.01) }'
+    assert_success
+}
+
+@test "asg-repomap rank --root on missing dir fails" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" rank --root "$TEST_TEMP/does-not-exist"
+    assert_failure
+    assert_output --partial "no source files"
+}
