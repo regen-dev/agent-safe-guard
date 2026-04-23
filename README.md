@@ -26,6 +26,7 @@ AI coding agents execute shell commands, read files, and make permission decisio
 - Compresses large `Read` outputs into structural summaries
 - Auto-decides safe vs unsafe permission requests
 - Masks secrets and credentials in file reads
+- **Injects a ranked tree-sitter repo map at SessionStart so Claude stops re-reading files every session** (new — see [Repo Map](#repo-map-primer) below)
 - Tracks session metrics, rule matches, tool latency, compaction, and subagent usage
 - Supports extension packages from remote catalogs (marketplace)
 - Lets you inspect and override policy at the package and rule level with `asg-cli`
@@ -77,7 +78,7 @@ Installation from source:
 ```bash
 git clone https://github.com/regen-dev/agent-safe-guard.git
 cd agent-safe-guard
-git submodule update --init --recursive   # needed for tests only
+git submodule update --init --recursive   # required — tree-sitter grammars + doctest + bats
 cmake -S . -B build/native -DSG_BUILD_NATIVE=ON
 cmake --build build/native -j$(nproc)
 ./build/native/native/asg-install
@@ -86,7 +87,7 @@ cmake --build build/native -j$(nproc)
 Notes:
 
 - The installer creates native hook symlinks in `~/.claude/hooks/asg-*`.
-- It installs `asg-cli`, `asg-statusline`, `asg-install`, and `asg-uninstall` into `~/.local/bin`.
+- It installs `asg-cli`, `asg-statusline`, `asg-repomap`, `asg-install`, and `asg-uninstall` into `~/.local/bin`.
 - It attempts to install and enable user `systemd` socket units for `sgd`.
 - `~/.local/bin` should be on your `PATH`.
 - Start a new Claude Code session after install.
@@ -159,10 +160,12 @@ Repository layout:
 ```text
 config.env                  # Default thresholds and limits
 native/                     # Native daemon, hook clients, CLI tools
+  queries/                  # Tree-sitter tag queries (TS/JS) for the repo map
 hooks/                      # Legacy/reference Bash implementation, not installed
 systemd/                    # User systemd socket + service unit templates
-docs/                       # Architecture and roadmap docs
-tests/                      # bats-core integration tests (461 tests)
+third_party/                # Pinned submodules (tree-sitter + grammars, doctest)
+docs/                       # Architecture, roadmap, and feature docs
+tests/                      # bats-core integration tests (547 tests)
 screenshots/                # README assets
 ```
 
@@ -199,7 +202,7 @@ make test
 
 Useful test targets:
 
-- `make test` — all 461 tests, parallel
+- `make test` — all 547 tests, parallel
 - `make test-unit` — unit tests only
 - `make test-integration` — integration tests only
 - `make coverage` — with line coverage report
@@ -207,6 +210,74 @@ Useful test targets:
 - `make test-native-rule-audit` — verify all rules compile and match expected inputs
 
 The test suite runs in isolated temp homes. It does not touch your real `~/.claude` state.
+
+## Repo Map Primer
+
+A port of [aider](https://github.com/Aider-AI/aider)'s `RepoMap` to native C++20, integrated with the existing daemon.
+
+At session start, the daemon walks your repo with tree-sitter, ranks files by cross-reference PageRank, and injects a compact `path:line kind name` map of the top files into Claude's `additionalContext`. Claude starts every session already knowing where the classes, interfaces, functions, and methods live — no warm-up Read/Grep volleys needed.
+
+**Example.** After this lands, asking "does this repo have a `Promises` class?" on a fresh session gets answered instantly from the primer, no file I/O:
+
+```
+> o repo tem uma classe Promises? em qual arquivo e linha?
+
+Sim, há duas cópias — ambas definem class Promises na linha 4:
+  - app-gps-INOVA/src/Promises.js:4
+  - app-gps-SAMU/src/Promises.js:4
+```
+
+### How it works
+
+1. Tree-sitter parses each `.ts` / `.mts` / `.cts` / `.js` / `.mjs` / `.cjs` file (TSX + more languages planned for v0.3). Declaration files (`.d.ts`) are skipped.
+2. A file graph is built from cross-file identifier references, weighted by name-shape heuristics.
+3. Hand-rolled PageRank (50 iters, damping 0.85) ranks files.
+4. The top-N tags are rendered as `rel_path:line kind subkind name` lines, sized under `SG_REPOMAP_MAX_TOKENS` (default 4096) via binary search on N. Per-file tag cap (default 40) keeps barrel re-exports from starving the budget.
+5. Results are cached at `<repo>/.asg-repomap/tags.v1.bin`. On git repos, first build appends `.asg-repomap/` to `.git/info/exclude`. Subsequent session-starts mtime-check each file and only reparse what changed — typical warm update is under 100 ms even on 3k-file repos.
+
+### Measurements
+
+On Ryzen 9 9950X3D, single-threaded, against real TS/JS working repos:
+
+| Repo size          | Cold build | Warm update | Cache  | Render (budget 4096) |
+|---                 |---         |---          |---     |---                   |
+|   370 source files | 3.3 s      | 10 ms       | 1.0 MB | 4 files / 160 tags   |
+| 1 227 source files | 10.0 s     | 40 ms       | 3.1 MB | 3 files / 120 tags   |
+| 3 235 source files | 21.6 s     | 100 ms      | 6.8 MB | 3 files / 120 tags   |
+
+Render itself is sub-200 ms once the cache exists.
+
+### Configure
+
+All knobs are optional. Defaults ship enabled.
+
+```bash
+# ~/.claude/.safeguard/features.env
+SG_FEATURE_REPOMAP=1                   # toggle the SessionStart injection
+
+# ~/.claude/.safeguard/config.env (or env vars)
+SG_REPOMAP_MAX_TOKENS=4096             # chars/4 budget for the injected map
+SG_REPOMAP_MAX_FILE_BYTES=524288       # skip source files > 512 KB
+SG_REPOMAP_MAX_TAGS_PER_FILE=40        # per-file tag cap (0 = unlimited)
+```
+
+Toggle interactively via `asg-cli` → Settings tab → "Repo Map Primer".
+
+### Use the CLI directly
+
+The `asg-repomap` binary is useful on its own for debugging, scripting, or pre-warming caches:
+
+```bash
+asg-repomap build  --root ~/src/my-repo            # full cache build
+asg-repomap update --root ~/src/my-repo            # incremental (mtime-skip)
+asg-repomap render --root ~/src/my-repo            # print the map
+asg-repomap render --root ~/src/my-repo --budget 8192
+asg-repomap stats  --root ~/src/my-repo            # files, tags, cache size
+asg-repomap clean  --root ~/src/my-repo            # rm -rf .asg-repomap/
+asg-repomap build  --file some.ts --tags           # single-file inspection
+```
+
+Full details in [docs/repomap.md](docs/repomap.md).
 
 ## Extension Packages (Catalog)
 
@@ -235,6 +306,7 @@ Current direction:
 ## Documentation
 
 - [native/README.md](native/README.md) — native runtime, protocol, event logging
+- [docs/repomap.md](docs/repomap.md) — repo map algorithm, CLI, configuration, measurements
 - [docs/rule-engine-architecture.md](docs/rule-engine-architecture.md) — phase model, ModSecurity-style engine
 - [docs/policy-catalog-console-plan.md](docs/policy-catalog-console-plan.md) — catalog and console UX design
 - [docs/distribution-roadmap.md](docs/distribution-roadmap.md) — packaging and platform plan
