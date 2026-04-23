@@ -13,6 +13,7 @@ NATIVE_BUILD_DIR ?= ./build/native
 	test-native-session-start-smoke test-native-session-end-smoke \
 	test-native-pre-compact-smoke test-native-subagent-start-smoke \
 	test-native-subagent-stop-smoke test-native-tool-error-smoke \
+	test-native-repomap-smoke \
 	native-install-user native-uninstall-user native-watch
 
 test:
@@ -179,6 +180,10 @@ test-native-subagent-stop-smoke: native-build
 	SG_DAEMON_SOCKET="$$SOCK" \
 	./tests/test_helper/bats-core/bin/bats --jobs 1 --timing --print-output-on-failure \
 	--filter '^subagent-stop ' tests/integration/subagent_lifecycle.bats
+
+test-native-repomap-smoke: native-build
+	SG_REPOMAP_BIN="$(PWD)/$(NATIVE_BUILD_DIR)/native/asg-repomap" \
+	./tests/test_helper/bats-core/bin/bats --jobs 1 --timing --print-output-on-failure tests/integration/repomap.bats
 
 test-native-tool-error-smoke: native-build
 	SOCK=/tmp/agent-safe-guard/sgd-tool-error-smoke.sock; \

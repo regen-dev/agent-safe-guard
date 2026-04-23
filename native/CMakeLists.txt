@@ -82,6 +82,24 @@ target_compile_definitions(asg-install PRIVATE SG_SOURCE_ROOT="${CMAKE_SOURCE_DI
 add_executable(asg-uninstall src/tools/asg_uninstall_main.cpp)
 target_link_libraries(asg-uninstall PRIVATE sg_common)
 
+# --- repomap module (Phase 0: stub only) --------------------------------
+# sg_repomap is a separate static lib so tree-sitter does not leak into
+# sg_common / safety-critical code. The daemon does not link it yet; that
+# happens in Phase 5 when session-start wires up the render query.
+if(SG_BUILD_REPOMAP)
+  add_library(sg_repomap STATIC
+    src/native/repomap_parser.cpp)
+  target_include_directories(sg_repomap PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_options(sg_repomap PRIVATE -Wall -Wextra -Wpedantic)
+  target_link_libraries(sg_repomap PUBLIC
+    tree_sitter tree_sitter_typescript tree_sitter_javascript)
+
+  add_executable(asg-repomap src/tools/asg_repomap_main.cpp)
+  target_link_libraries(asg-repomap PRIVATE sg_repomap)
+
+  install(TARGETS asg-repomap RUNTIME DESTINATION bin)
+endif()
+
 install(TARGETS sgd sg-hook-pre-tool-use sg-hook-post-tool-use
                 sg-hook-permission-request sg-hook-read-guard
                 sg-hook-read-compress sg-hook-stop sg-hook-session-start

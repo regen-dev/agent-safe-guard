@@ -100,6 +100,7 @@ Example units are in `systemd/`:
 - Subagent-start smoke run: `make test-native-subagent-start-smoke`
 - Subagent-stop smoke run: `make test-native-subagent-stop-smoke`
 - Tool-error smoke run: `make test-native-tool-error-smoke`
+- Repomap smoke run: `make test-native-repomap-smoke` (Phase 0 stub)
 - Watch mode: `make native-watch`
 
 Policy console:
