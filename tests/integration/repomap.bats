@@ -143,3 +143,61 @@ teardown() {
     assert_failure
     assert_output --partial "no source files"
 }
+
+# ==============================================================================
+# PHASE 3 — formatter + token budget
+# ==============================================================================
+
+@test "asg-repomap render emits path:line kind subkind name" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" render --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref"
+    assert_success
+    assert_output --regexp 'auth\.ts:[0-9]+ def class AuthService'
+    assert_output --regexp 'api\.ts:[0-9]+ def function handleLogin'
+    # Refs are NOT included by default.
+    refute_output --regexp ' ref call '
+}
+
+@test "asg-repomap render --refs includes ref tags" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" render --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref" --refs
+    assert_success
+    assert_output --regexp 'api\.ts:[0-9]+ ref call login'
+    assert_output --regexp 'gateway\.ts:[0-9]+ ref class AuthService'
+}
+
+@test "asg-repomap render output is sorted by file then line" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    run "$REPOMAP_BIN" render --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref"
+    assert_success
+    # Strip the stderr banner (which goes to stderr already) and sort stdout
+    # identically; diff must be empty.
+    local stdout_only
+    stdout_only=$(printf '%s\n' "$output" | grep -v '^ok files=')
+    local sorted
+    sorted=$(printf '%s\n' "$stdout_only" | LC_ALL=C sort)
+    [ "$stdout_only" = "$sorted" ]
+}
+
+@test "asg-repomap render respects --budget (truncates)" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    # Tiny budget — no file fits → 0 files, truncated.
+    run "$REPOMAP_BIN" render --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref" --budget 10
+    assert_success
+    assert_output --partial "truncated"
+    assert_output --partial "files=0/3"
+}
+
+@test "asg-repomap render produces stable token count" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built (run: make native-build)"
+    # Run twice; stderr tokens line must match (deterministic rendering).
+    run "$REPOMAP_BIN" render --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref" --budget 1024
+    assert_success
+    local first
+    first=$(echo "$output" | grep -oE 'tokens=[0-9]+')
+    run "$REPOMAP_BIN" render --root "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref" --budget 1024
+    assert_success
+    local second
+    second=$(echo "$output" | grep -oE 'tokens=[0-9]+')
+    [ "$first" = "$second" ]
+}

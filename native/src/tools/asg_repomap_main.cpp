@@ -1,3 +1,4 @@
+#include "sg/repomap_format.hpp"
 #include "sg/repomap_index.hpp"
 #include "sg/repomap_parser.hpp"
 
@@ -18,7 +19,11 @@ int PrintUsage(FILE* stream) {
       "                                 (default: node count only; --tags also\n"
       "                                  prints one `line kind subkind name` per tag)\n"
       "  rank --root <path>             walk root, build index, run PageRank,\n"
-      "                                 print one `score rel_path` per file\n",
+      "                                 print one `score rel_path` per file\n"
+      "  render --root <path>           render the ranked map as\n"
+      "         [--budget N]            `rel_path:line kind subkind name`, fitting\n"
+      "         [--refs]                `budget` chars/4 tokens (default 1024).\n"
+      "                                 --refs also emits ref tags (default: defs only)\n",
       stream);
   return 2;
 }
@@ -102,6 +107,63 @@ int RunRank(int argc, char** argv) {
   return 0;
 }
 
+int RunRender(int argc, char** argv) {
+  std::string root;
+  std::size_t budget = 1024;
+  bool include_refs = false;
+  for (int i = 0; i < argc; ++i) {
+    const std::string_view arg(argv[i]);
+    if (arg == "--root") {
+      if (i + 1 >= argc) {
+        std::fputs("error: --root requires a value\n", stderr);
+        return 2;
+      }
+      root = argv[++i];
+      continue;
+    }
+    if (arg == "--budget") {
+      if (i + 1 >= argc) {
+        std::fputs("error: --budget requires a value\n", stderr);
+        return 2;
+      }
+      try {
+        budget = static_cast<std::size_t>(std::stoul(argv[++i]));
+      } catch (...) {
+        std::fprintf(stderr, "error: invalid --budget: %s\n", argv[i]);
+        return 2;
+      }
+      continue;
+    }
+    if (arg == "--refs") {
+      include_refs = true;
+      continue;
+    }
+    std::fprintf(stderr, "error: unknown argument: %s\n", argv[i]);
+    return 2;
+  }
+  if (root.empty()) {
+    std::fputs("error: render requires --root <path>\n", stderr);
+    return 2;
+  }
+  const auto idx = sg::repomap::BuildIndex(root);
+  if (idx.files.empty()) {
+    std::fputs("error: no source files found under root\n", stderr);
+    return 1;
+  }
+  const auto ranked = sg::repomap::RankFiles(idx);
+
+  sg::repomap::RenderOptions opts;
+  opts.max_tokens = budget;
+  opts.include_refs = include_refs;
+  const auto result = sg::repomap::RenderTopN(idx, ranked, opts);
+  std::fprintf(stderr, "ok files=%zu/%zu tags=%zu tokens=%zu budget=%zu%s\n",
+               result.file_count, idx.files.size(), result.tag_count,
+               result.token_estimate, budget,
+               result.truncated ? " truncated" : "");
+  std::fwrite(result.text.data(), 1, result.text.size(), stdout);
+  return 0;
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     return PrintUsage(stderr);
@@ -112,6 +174,9 @@ int main(int argc, char** argv) {
   }
   if (cmd == "rank") {
     return RunRank(argc - 2, argv + 2);
+  }
+  if (cmd == "render") {
+    return RunRender(argc - 2, argv + 2);
   }
   if (cmd == "--help" || cmd == "-h" || cmd == "help") {
     PrintUsage(stdout);
