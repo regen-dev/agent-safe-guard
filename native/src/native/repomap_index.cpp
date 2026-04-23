@@ -20,7 +20,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr std::array<std::string_view, 21> kSkipDirs = {
+constexpr std::array<std::string_view, 24> kSkipDirs = {
     ".git",           "node_modules",      "vendor",   "build",
     "dist",           ".next",             "coverage", "__pycache__",
     ".venv",          "target",            ".asg-repomap",
@@ -30,6 +30,9 @@ constexpr std::array<std::string_view, 21> kSkipDirs = {
     "linux-unpacked", "out",               ".turbo",
     ".parcel-cache",  ".cache",            ".yarn",
     "bower_components",
+    // Editor/test profiles that ship minified third-party JS inside
+    // the repo (Chrome DevTools test profiles, etc.).
+    ".vscode",        ".idea",             ".history",
 };
 
 bool ShouldSkipDir(std::string_view name) {
