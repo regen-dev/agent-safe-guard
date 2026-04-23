@@ -464,6 +464,19 @@ bool IsBuildArtifact(std::string_view lower_command) {
   return RegexMatch(std::string(lower_command), kBuildArtifact);
 }
 
+// Filtered-search patterns: when a command uses an exclusion glob or a
+// negated find-predicate, it's opting *out* of touching the artifact — not
+// reading it. We don't want to block `rg --glob '!**/*.min.js' ...` just
+// because `.min.js` appears in the command string.
+bool IsFilteredSearchCommand(std::string_view lower_command) {
+  static const std::regex kExclusion(
+      R"((--glob[[:space:]]+['"]?!)"
+      R"(|--exclude(-dir)?[[:space:]])"
+      R"(|[[:space:]]-not[[:space:]]+(-name|-path|-iname)[[:space:]])"
+      R"(|[[:space:]]-path[[:space:]]+['"]?!))");
+  return RegexMatch(std::string(lower_command), kExclusion);
+}
+
 std::string JsonSuppressFor(const Transaction& tx) {
   const auto warning = GetTransactionField(tx, "warning");
   if (warning.has_value() && !warning->empty()) {
@@ -1208,7 +1221,7 @@ std::vector<CompiledRule> BuildRules() {
           return std::nullopt;
         }
         const std::string lower(FieldOrEmpty(tx, "lower_command"));
-        if (!IsBuildArtifact(lower)) {
+        if (!IsBuildArtifact(lower) || IsFilteredSearchCommand(lower)) {
           return std::nullopt;
         }
 
@@ -1245,7 +1258,7 @@ std::vector<CompiledRule> BuildRules() {
           return std::nullopt;
         }
         const std::string lower(FieldOrEmpty(tx, "lower_command"));
-        if (!IsBuildArtifact(lower)) {
+        if (!IsBuildArtifact(lower) || IsFilteredSearchCommand(lower)) {
           return std::nullopt;
         }
 

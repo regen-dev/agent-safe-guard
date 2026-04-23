@@ -476,6 +476,37 @@ teardown() {
     assert_output --partial "deny"
 }
 
+# Regression: false-positive on 300200/300210 when the minified path appears
+# only inside a glob EXCLUSION (rg/find excluding build artifacts).
+@test "allows rg with --glob exclusions that mention .min.js" {
+    run_hook "$HOOK" "$(make_bash_input "rg class --glob '!**/*.min.js' --glob '!**/dist/**' src/")"
+    refute_output --partial "deny"
+}
+
+@test "allows rg with --glob '!**/dist/**' exclusion" {
+    run_hook "$HOOK" "$(make_bash_input "rg pattern --glob '!**/dist/bundle.js' .")"
+    refute_output --partial "deny"
+}
+
+@test "allows find with -not -name '*.min.js'" {
+    run_hook "$HOOK" "$(make_bash_input 'find . -not -name "*.min.js" -type f')"
+    refute_output --partial "deny"
+}
+
+@test "allows grep -l --exclude pattern that mentions bundle.js" {
+    # -l keeps grep -r out of the recursive-without-limit rule; --exclude
+    # bypasses the minified rule (the grepped file is excluded, not read).
+    run_hook "$HOOK" "$(make_bash_input "grep -r -l pattern --exclude 'bundle.js' src/")"
+    refute_output --partial "deny"
+}
+
+@test "still blocks cat on minified even when other exclusions are present" {
+    # The negative case: user IS reading a build artifact, even if --glob is mentioned elsewhere.
+    # This specific command has no exclusion, only a direct cat on a minified file.
+    run_hook "$HOOK" "$(make_bash_input 'cat /project/dist/bundle.min.js')"
+    assert_output --partial "deny"
+}
+
 # ==============================================================================
 # RECURSIVE GREP (main agent)
 # ==============================================================================
