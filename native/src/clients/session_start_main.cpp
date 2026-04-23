@@ -34,7 +34,7 @@ std::string BuildRepomapRequest() {
   const char* budget_env = std::getenv("SG_REPOMAP_MAX_TOKENS");
   const std::string budget_str = (budget_env != nullptr && *budget_env != '\0')
                                      ? std::string(budget_env)
-                                     : std::string("1024");
+                                     : std::string("4096");
   std::string out;
   out.reserve(pwd.size() + 48);
   out.append("{\"cwd\":\"");

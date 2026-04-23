@@ -47,19 +47,48 @@ std::string FormatLines(const std::vector<RenderTag>& tags) {
   return out;
 }
 
+// Rank subkinds so the per-file cap keeps the structurally most useful tags:
+// classes/interfaces first, then top-level functions/types/enums, then
+// methods, refs last. Deterministic so render output is stable.
+int SubkindPriority(TagKind kind, std::string_view subkind) {
+  if (kind == TagKind::kDef) {
+    if (subkind == "class" || subkind == "interface") return 0;
+    if (subkind == "function" || subkind == "type" ||
+        subkind == "enum" || subkind == "module") return 1;
+    if (subkind == "method") return 2;
+    return 3;
+  }
+  return 10;  // refs always last
+}
+
 RenderResult RenderForN(const Index& idx,
                         const std::vector<RankedFile>& ranked,
-                        std::size_t n, bool include_refs) {
+                        std::size_t n, bool include_refs,
+                        std::size_t max_tags_per_file) {
   RenderResult r;
   n = std::min(n, ranked.size());
   std::vector<RenderTag> rtags;
   for (std::size_t i = 0; i < n; ++i) {
     const auto& file = idx.files[ranked[i].file_id];
+    std::vector<RenderTag> file_tags;
     for (const auto& tag : file.tags) {
       if (!include_refs && tag.kind != TagKind::kDef) continue;
-      rtags.push_back({file.rel_path, tag.line, tag.kind, tag.subkind,
-                       tag.name});
+      file_tags.push_back({file.rel_path, tag.line, tag.kind, tag.subkind,
+                           tag.name});
     }
+    if (max_tags_per_file > 0 && file_tags.size() > max_tags_per_file) {
+      // Keep the structurally most useful tags first, then order the slice
+      // by file/line for the final output.
+      std::stable_sort(file_tags.begin(), file_tags.end(),
+                       [](const RenderTag& a, const RenderTag& b) {
+                         const int pa = SubkindPriority(a.kind, a.subkind);
+                         const int pb = SubkindPriority(b.kind, b.subkind);
+                         if (pa != pb) return pa < pb;
+                         return a.line < b.line;
+                       });
+      file_tags.resize(max_tags_per_file);
+    }
+    rtags.insert(rtags.end(), file_tags.begin(), file_tags.end());
   }
   std::sort(rtags.begin(), rtags.end(), CompareTags);
   r.text = FormatLines(rtags);
@@ -82,7 +111,8 @@ RenderResult RenderTopN(const Index& idx,
   if (total == 0) return {};
 
   // First check whether *all* files fit. If yes, just return that.
-  RenderResult full = RenderForN(idx, ranked, total, opts.include_refs);
+  RenderResult full =
+      RenderForN(idx, ranked, total, opts.include_refs, opts.max_tags_per_file);
   if (full.token_estimate <= opts.max_tokens) {
     return full;
   }
@@ -92,11 +122,12 @@ RenderResult RenderTopN(const Index& idx,
   std::size_t lo = std::min(opts.min_files_guaranteed, total);
   std::size_t hi = total;
   RenderResult best;
-  // Ensure the guaranteed-minimum renders even if it overflows slightly.
-  best = RenderForN(idx, ranked, lo, opts.include_refs);
+  best =
+      RenderForN(idx, ranked, lo, opts.include_refs, opts.max_tags_per_file);
   while (lo < hi) {
     const std::size_t mid = lo + (hi - lo + 1) / 2;
-    RenderResult cand = RenderForN(idx, ranked, mid, opts.include_refs);
+    RenderResult cand = RenderForN(idx, ranked, mid, opts.include_refs,
+                                   opts.max_tags_per_file);
     if (cand.token_estimate <= opts.max_tokens) {
       best = std::move(cand);
       lo = mid;

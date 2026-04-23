@@ -13,7 +13,7 @@ namespace sg {
 
 namespace {
 
-constexpr std::size_t kDefaultBudget = 1024;
+constexpr std::size_t kDefaultBudget = 4096;
 constexpr std::size_t kMaxBudget = 65536;
 
 int EnvInt(const char* name, int fallback) {
@@ -99,6 +99,15 @@ std::string EvaluateRepomapRender(std::string_view request_json) {
   repomap::RenderOptions render_opts;
   render_opts.max_tokens = budget;
   render_opts.include_refs = false;
+  // Per-file cap prevents barrel re-export files from dominating the budget.
+  if (const char* cap = std::getenv("SG_REPOMAP_MAX_TAGS_PER_FILE");
+      cap != nullptr && *cap != '\0') {
+    try {
+      render_opts.max_tags_per_file =
+          static_cast<std::size_t>(std::stoul(cap));
+    } catch (...) {
+    }
+  }
   const auto rendered = repomap::RenderTopN(idx, ranked, render_opts);
 
   // Emit the final hook response directly, so the client just writes the

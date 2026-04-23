@@ -16,6 +16,7 @@ This directory contains the active native runtime for `agent-safe-guard`.
 - `asg-statusline`: native Claude Code status line.
 - `asg-install`: native installer.
 - `asg-uninstall`: native uninstaller.
+- `asg-repomap`: tree-sitter-powered repo-map CLI (Phase 7, see [../docs/repomap.md](../docs/repomap.md)).
 - `sg-hook-pre-tool-use`: native hook client for `pre-tool-use`.
 - `sg-hook-post-tool-use`: native hook client for `post-tool-use`.
 - `sg-hook-permission-request`: native hook client for `permission-request`.
@@ -100,7 +101,8 @@ Example units are in `systemd/`:
 - Subagent-start smoke run: `make test-native-subagent-start-smoke`
 - Subagent-stop smoke run: `make test-native-subagent-stop-smoke`
 - Tool-error smoke run: `make test-native-tool-error-smoke`
-- Repomap smoke run: `make test-native-repomap-smoke` (Phase 0 stub)
+- Repomap CLI smoke run: `make test-native-repomap-smoke`
+- Repomap daemon-integration smoke run: `make test-native-repomap-session-smoke`
 - Watch mode: `make native-watch`
 
 Policy console:

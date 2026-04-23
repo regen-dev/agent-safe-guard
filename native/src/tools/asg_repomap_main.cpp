@@ -264,6 +264,7 @@ int RunRender(int argc, char** argv) {
   std::string root;
   std::size_t budget = 1024;
   bool include_refs = false;
+  std::size_t max_tags_per_file = 40;
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg(argv[i]);
     if (arg == "--root") {
@@ -291,6 +292,18 @@ int RunRender(int argc, char** argv) {
       include_refs = true;
       continue;
     }
+    if (arg == "--max-tags-per-file") {
+      if (i + 1 >= argc) {
+        std::fputs("error: --max-tags-per-file requires a value\n", stderr);
+        return 2;
+      }
+      try {
+        max_tags_per_file = static_cast<std::size_t>(std::stoul(argv[++i]));
+      } catch (...) {
+        return 2;
+      }
+      continue;
+    }
     std::fprintf(stderr, "error: unknown argument: %s\n", argv[i]);
     return 2;
   }
@@ -298,9 +311,18 @@ int RunRender(int argc, char** argv) {
     std::fputs("error: render requires --root <path>\n", stderr);
     return 2;
   }
-  const auto idx = sg::repomap::BuildIndex(root);
+  // Render is a *read* op from the user's perspective — don't write the
+  // cache as a side effect. Users write via `build` / `update`. This also
+  // keeps the test fixture under version control pristine.
+  sg::repomap::EnsureOptions eopts;
+  eopts.persist_cache = false;
+  eopts.write_git_exclude = false;
+  sg::repomap::EnsureStats estats;
+  std::string err;
+  const auto idx = sg::repomap::EnsureFresh(root, eopts, &estats, &err);
   if (idx.files.empty()) {
-    std::fputs("error: no source files found under root\n", stderr);
+    std::fprintf(stderr, "error: no source files%s%s\n",
+                 err.empty() ? "" : ": ", err.c_str());
     return 1;
   }
   const auto ranked = sg::repomap::RankFiles(idx);
@@ -308,11 +330,14 @@ int RunRender(int argc, char** argv) {
   sg::repomap::RenderOptions opts;
   opts.max_tokens = budget;
   opts.include_refs = include_refs;
+  opts.max_tags_per_file = max_tags_per_file;
   const auto result = sg::repomap::RenderTopN(idx, ranked, opts);
-  std::fprintf(stderr, "ok files=%zu/%zu tags=%zu tokens=%zu budget=%zu%s\n",
+  std::fprintf(stderr,
+               "ok files=%zu/%zu tags=%zu tokens=%zu budget=%zu%s cache=%s\n",
                result.file_count, idx.files.size(), result.tag_count,
                result.token_estimate, budget,
-               result.truncated ? " truncated" : "");
+               result.truncated ? " truncated" : "",
+               estats.used_cache ? "yes" : "no");
   std::fwrite(result.text.data(), 1, result.text.size(), stdout);
   return 0;
 }

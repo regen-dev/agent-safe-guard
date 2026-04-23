@@ -165,6 +165,12 @@ const char* TagKindName(TagKind kind) {
 }
 
 Language DetectLanguage(std::string_view path) {
+  // Skip TypeScript declaration files — type-only, enormously noisy, add
+  // no structural signal about where the code lives.
+  if (HasSuffix(path, ".d.ts") || HasSuffix(path, ".d.mts") ||
+      HasSuffix(path, ".d.cts")) {
+    return Language::kUnknown;
+  }
   if (HasSuffix(path, ".ts") || HasSuffix(path, ".mts") ||
       HasSuffix(path, ".cts")) {
     return Language::kTypeScript;

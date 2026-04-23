@@ -14,6 +14,10 @@ struct RenderOptions {
   std::size_t max_tokens = 1024;       // chars/4 approximation
   bool include_refs = false;            // MVP: defs only — more signal per token
   std::size_t min_files_guaranteed = 0; // always include at least this many files
+  // Keep at most this many tags from any single file. Files with huge export
+  // surfaces (barrel re-exports, config catalogues) otherwise dominate the
+  // budget and starve everything else. 0 disables the cap.
+  std::size_t max_tags_per_file = 40;
 };
 
 struct RenderResult {

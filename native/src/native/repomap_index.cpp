@@ -20,9 +20,16 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr std::array<std::string_view, 11> kSkipDirs = {
-    ".git", "node_modules", "vendor",  "build",       "dist",     ".next",
-    "coverage", "__pycache__", ".venv", "target",  ".asg-repomap",
+constexpr std::array<std::string_view, 21> kSkipDirs = {
+    ".git",           "node_modules",      "vendor",   "build",
+    "dist",           ".next",             "coverage", "__pycache__",
+    ".venv",          "target",            ".asg-repomap",
+    // Common Electron / packaged-app output dirs that often ship
+    // full copies of TS libraries and inflate the rank pointlessly.
+    "release",        "win-unpacked",      "mac-unpacked",
+    "linux-unpacked", "out",               ".turbo",
+    ".parcel-cache",  ".cache",            ".yarn",
+    "bower_components",
 };
 
 bool ShouldSkipDir(std::string_view name) {
