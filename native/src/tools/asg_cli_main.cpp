@@ -231,6 +231,14 @@ const std::vector<Feature> kDefaultFeatures = {
      "You still have the protections, but you lose the live status HUD.",
      "Operator HUD",
      false},
+    {"SG_FEATURE_REPOMAP",
+     "Repomap",
+     "Repo Map Primer",
+     "Ships a ranked tree-sitter repo map as SessionStart context.",
+     "At session start, injects a compact `path:line kind name` map of the top-ranked TS/JS files so Claude stops re-reading files to learn the layout.",
+     "No repo-map primer — Claude has to rediscover structure by re-opening files every session.",
+     "Operator HUD",
+     true},
 };
 
 const std::vector<PackageInfo> kKnownPackages = {
