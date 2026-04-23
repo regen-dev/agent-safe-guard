@@ -54,6 +54,8 @@ constexpr FeatureDef kFeatures[] = {
      "Log hook errors and add recovery hints", "1"},
     {"SG_FEATURE_STATUSLINE", "StatusLine", "Render the terminal status line",
      "0"},
+    {"SG_FEATURE_REPOMAP", "Repomap",
+     "Inject a ranked repo-map into SessionStart additionalContext", "1"},
 };
 
 struct HookDef {
@@ -412,7 +414,11 @@ bool EnsureNativeBinaries(const Options& options) {
       "sg-hook-session-start", "sg-hook-session-end",
       "sg-hook-pre-compact", "sg-hook-subagent-start",
       "sg-hook-subagent-stop", "sg-hook-tool-error", "asg-cli",
-      "asg-statusline", "asg-install", "asg-uninstall"};
+      "asg-statusline", "asg-install", "asg-uninstall",
+#ifdef SG_HAS_REPOMAP
+      "asg-repomap",
+#endif
+  };
 
   std::vector<std::string> missing;
   for (const auto& name : required) {
@@ -740,6 +746,18 @@ int main(int argc, char** argv) {
        (LocalBinDir() / "asg-install").string());
   Info("Installed asg-uninstall symlink at " +
        (LocalBinDir() / "asg-uninstall").string());
+#ifdef SG_HAS_REPOMAP
+  const auto asg_repomap = ResolveNativeBin(options, "asg-repomap");
+  if (asg_repomap.has_value()) {
+    if (!InstallSymlink(LocalBinDir() / "asg-repomap", *asg_repomap)) {
+      return Error("failed to install asg-repomap");
+    }
+    Info("Installed asg-repomap symlink at " +
+         (LocalBinDir() / "asg-repomap").string());
+  } else {
+    Warn("asg-repomap binary missing; skipping repomap install");
+  }
+#endif
 
   Info("Merging settings.json...");
   if (!UpdateSettingsJson()) {

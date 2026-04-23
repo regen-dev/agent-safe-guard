@@ -34,6 +34,7 @@ NATIVE_TEST_BINARIES=(
     "asg-statusline"
     "asg-install"
     "asg-uninstall"
+    "asg-repomap"
 )
 
 create_stub_binary() {
@@ -107,6 +108,7 @@ install_with_full_native_bins() {
         "asg-statusline"
         "asg-install"
         "asg-uninstall"
+        "asg-repomap"
     )
     local b
     for b in "${native_bins[@]}"; do
@@ -208,6 +210,29 @@ EOF
     assert_success
 }
 
+@test "install includes SG_FEATURE_REPOMAP=1 default" {
+    local native_bin_dir="$TEST_TEMP/native-bin"
+    install_with_full_native_bins "$native_bin_dir" > /dev/null
+    run grep '^SG_FEATURE_REPOMAP=1$' "$HOME/.claude/.safeguard/features.env"
+    assert_success
+}
+
+@test "install symlinks asg-repomap to ~/.local/bin" {
+    local native_bin_dir="$TEST_TEMP/native-bin"
+    install_with_full_native_bins "$native_bin_dir" > /dev/null
+    assert_exist "$HOME/.local/bin/asg-repomap"
+    [[ -L "$HOME/.local/bin/asg-repomap" ]]
+}
+
+@test "uninstall removes asg-repomap symlink" {
+    local native_bin_dir="$TEST_TEMP/native-bin"
+    install_with_full_native_bins "$native_bin_dir" > /dev/null
+    assert_exist "$HOME/.local/bin/asg-repomap"
+    run "$UNINSTALL_BIN"
+    assert_success
+    refute [ -e "$HOME/.local/bin/asg-repomap" ]
+}
+
 @test "install scaffolds default policy catalog source" {
     local native_bin_dir="$TEST_TEMP/native-bin"
     install_with_full_native_bins "$native_bin_dir" > /dev/null
@@ -220,7 +245,8 @@ EOF
 @test "install --feature-ui updates features.env selections" {
     local native_bin_dir="$TEST_TEMP/native-bin"
     create_full_native_bin_dir "$native_bin_dir"
-    run bash -c "{ printf 'n\n'; yes '' | head -n 11; printf 'y\n'; } | '$INSTALL_BIN' --native --native-bin-dir '$native_bin_dir' --no-enable-systemd-user --feature-ui"
+    # 14 features: PreToolUse (n) + 11 defaults + StatusLine (y) + Repomap (default).
+    run bash -c "{ printf 'n\n'; yes '' | head -n 11; printf 'y\n'; yes '' | head -n 1; } | '$INSTALL_BIN' --native --native-bin-dir '$native_bin_dir' --no-enable-systemd-user --feature-ui"
     assert_success
     run grep '^SG_FEATURE_PRE_TOOL_USE=0$' "$HOME/.claude/.safeguard/features.env"
     assert_success

@@ -201,6 +201,7 @@ int main(int argc, char** argv) {
   RemoveHookIfInstalled(LocalBinDir() / "asg-statusline");
   RemoveHookIfInstalled(LocalBinDir() / "asg-install");
   RemoveHookIfInstalled(LocalBinDir() / "asg-uninstall");
+  RemoveHookIfInstalled(LocalBinDir() / "asg-repomap");
   std::error_code ec;
   std::filesystem::remove(ClaudeDir() / "statusline.sh", ec);
 
