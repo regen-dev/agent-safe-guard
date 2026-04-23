@@ -59,9 +59,9 @@ View installed package info, version, tags, and contained rules.
 
 ### Settings
 
-Toggle defense features and see what each one controls.
+Toggle defense features and see what each one controls. Includes the **Repo Map Primer** (tree-sitter SessionStart context — see [Repo Map](#repo-map-primer)).
 
-![Settings view](screenshots/console-settings.png)
+![Settings view](screenshots/console-repomap.png)
 
 ## Quick Start
 
@@ -216,6 +216,10 @@ The test suite runs in isolated temp homes. It does not touch your real `~/.clau
 A port of [aider](https://github.com/Aider-AI/aider)'s `RepoMap` to native C++20, integrated with the existing daemon.
 
 At session start, the daemon walks your repo with tree-sitter, ranks files by cross-reference PageRank, and injects a compact `path:line kind name` map of the top files into Claude's `additionalContext`. Claude starts every session already knowing where the classes, interfaces, functions, and methods live — no warm-up Read/Grep volleys needed.
+
+![Repo Map in the asg-cli Settings tab](screenshots/console-repomap.png)
+
+Toggle live from `asg-cli` → Settings → "Repo Map Primer".
 
 **Example.** After this lands, asking "does this repo have a `Promises` class?" on a fresh session gets answered instantly from the primer, no file I/O:
 
