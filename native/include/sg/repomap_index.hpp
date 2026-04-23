@@ -35,6 +35,21 @@ struct BuildOptions {
 // cache dir itself.
 Index BuildIndex(std::string_view repo_root, const BuildOptions& opts = {});
 
+// Collect the list of .ts/.js source files under `repo_root`. Honors the
+// skip list. Results are sorted. Exposed for incremental updates so callers
+// can compare the filesystem's current file set against the cached set.
+void CollectSourceFiles(std::string_view repo_root,
+                        std::vector<std::string>* out);
+
+// Rebuild the derived defines/references maps after a caller mutates
+// idx.files in place. Idempotent.
+void RebuildDerivedMaps(Index* idx);
+
+// Parse one file and fill a FileEntry (rel_path, mtime_ns, size_bytes, tags).
+// `rel_path` is derived from `repo_root`. Returns false on parse error.
+bool ParseIntoFileEntry(std::string_view repo_root, std::string_view abs_path,
+                        const BuildOptions& opts, FileEntry* entry);
+
 struct RankedFile {
   std::uint32_t file_id = 0;
   double score = 0.0;

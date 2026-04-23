@@ -49,8 +49,14 @@ std::uint64_t MtimeNs(const fs::path& path) {
           .count());
 }
 
-void CollectSourceFiles(const fs::path& root, std::vector<fs::path>* out) {
+}  // namespace
+
+void CollectSourceFiles(std::string_view repo_root,
+                        std::vector<std::string>* out) {
+  fs::path root(repo_root);
   std::error_code ec;
+  if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) return;
+  std::vector<fs::path> paths;
   for (auto it = fs::recursive_directory_iterator(
            root, fs::directory_options::skip_permission_denied, ec);
        !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
@@ -63,17 +69,53 @@ void CollectSourceFiles(const fs::path& root, std::vector<fs::path>* out) {
       }
       continue;
     }
-    if (entry.is_symlink(ec)) {
-      // skip symlinks to avoid loops
-      continue;
-    }
+    if (entry.is_symlink(ec)) continue;
     if (!entry.is_regular_file(ec)) continue;
     if (DetectLanguage(p.string()) == Language::kUnknown) continue;
-    out->push_back(p);
+    paths.push_back(p);
+  }
+  std::sort(paths.begin(), paths.end());
+  out->reserve(paths.size());
+  for (const auto& p : paths) out->push_back(p.string());
+}
+
+void RebuildDerivedMaps(Index* idx) {
+  idx->defines.clear();
+  idx->references.clear();
+  for (std::uint32_t fid = 0; fid < idx->files.size(); ++fid) {
+    for (const auto& tag : idx->files[fid].tags) {
+      if (tag.kind == TagKind::kDef) {
+        idx->defines[tag.name].push_back(fid);
+      } else {
+        idx->references[tag.name].push_back(fid);
+      }
+    }
+  }
+  for (auto& kv : idx->defines) {
+    std::sort(kv.second.begin(), kv.second.end());
+    kv.second.erase(std::unique(kv.second.begin(), kv.second.end()),
+                    kv.second.end());
   }
 }
 
-}  // namespace
+bool ParseIntoFileEntry(std::string_view repo_root, std::string_view abs_path,
+                        const BuildOptions& opts, FileEntry* entry) {
+  fs::path abs(abs_path);
+  std::error_code size_ec;
+  const auto size = fs::file_size(abs, size_ec);
+  if (!size_ec && size > opts.max_file_bytes) return false;
+
+  auto parsed = ParseFile(abs.string(), /*extract_tags=*/true);
+  if (!parsed.stats.ok) return false;
+
+  std::error_code rel_ec;
+  entry->rel_path = fs::relative(abs, fs::path(repo_root), rel_ec).generic_string();
+  if (rel_ec || entry->rel_path.empty()) entry->rel_path = abs.generic_string();
+  entry->size_bytes = parsed.stats.bytes;
+  entry->mtime_ns = MtimeNs(abs);
+  entry->tags = std::move(parsed.tags);
+  return true;
+}
 
 double IdentifierShapeMultiplier(std::string_view ident) {
   if (ident.empty()) return 1.0;
@@ -106,44 +148,14 @@ Index BuildIndex(std::string_view repo_root, const BuildOptions& opts) {
     return idx;
   }
 
-  std::vector<fs::path> sources;
-  CollectSourceFiles(root, &sources);
-  std::sort(sources.begin(), sources.end());
-
+  std::vector<std::string> sources;
+  CollectSourceFiles(idx.repo_root, &sources);
   for (const auto& path : sources) {
-    std::error_code size_ec;
-    const auto size = fs::file_size(path, size_ec);
-    if (!size_ec && size > opts.max_file_bytes) continue;
-
-    auto parsed = ParseFile(path.string(), /*extract_tags=*/true);
-    if (!parsed.stats.ok) continue;
-
     FileEntry entry;
-    entry.rel_path = fs::relative(path, root, ec).generic_string();
-    if (ec || entry.rel_path.empty()) entry.rel_path = path.generic_string();
-    entry.size_bytes = parsed.stats.bytes;
-    entry.mtime_ns = MtimeNs(path);
-    entry.tags = std::move(parsed.tags);
+    if (!ParseIntoFileEntry(idx.repo_root, path, opts, &entry)) continue;
     idx.files.push_back(std::move(entry));
   }
-
-  for (std::uint32_t fid = 0; fid < idx.files.size(); ++fid) {
-    for (const auto& tag : idx.files[fid].tags) {
-      if (tag.kind == TagKind::kDef) {
-        idx.defines[tag.name].push_back(fid);
-      } else {
-        idx.references[tag.name].push_back(fid);
-      }
-    }
-  }
-  // Ensure deterministic ordering of file id vectors.
-  for (auto& kv : idx.defines) {
-    std::sort(kv.second.begin(), kv.second.end());
-    kv.second.erase(std::unique(kv.second.begin(), kv.second.end()),
-                    kv.second.end());
-  }
-  // For references we keep duplicates (multiset-like) so that a file
-  // referencing an ident twice accrues double weight toward the definer.
+  RebuildDerivedMaps(&idx);
   return idx;
 }
 

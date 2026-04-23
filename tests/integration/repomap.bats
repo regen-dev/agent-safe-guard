@@ -201,3 +201,120 @@ teardown() {
     second=$(echo "$output" | grep -oE 'tokens=[0-9]+')
     [ "$first" = "$second" ]
 }
+
+# ==============================================================================
+# PHASE 4 — cache lifecycle
+# ==============================================================================
+
+setup_cache_repo() {
+    REPO="$TEST_TEMP/cache-repo"
+    mkdir -p "$REPO"
+    cp -r "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref/." "$REPO/"
+}
+
+@test "asg-repomap build --root writes cache dir with tags.v1.bin" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    run "$REPOMAP_BIN" build --root "$REPO"
+    assert_success
+    assert_output --partial "files=3"
+    assert_output --partial "wrote_cache=yes"
+    assert_file_exist "$REPO/.asg-repomap/tags.v1.bin"
+}
+
+@test "asg-repomap stats reads cache and reports counts" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    run "$REPOMAP_BIN" build --root "$REPO"
+    assert_success
+    run "$REPOMAP_BIN" stats --root "$REPO"
+    assert_success
+    assert_output --partial "files=3"
+    assert_output --partial "tags="
+    assert_output --partial ".asg-repomap/tags.v1.bin"
+}
+
+@test "asg-repomap update is a no-op when nothing changed" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    run "$REPOMAP_BIN" build --root "$REPO"
+    assert_success
+    run "$REPOMAP_BIN" update --root "$REPO"
+    assert_success
+    assert_output --partial "reparsed=0"
+    assert_output --partial "added=0"
+    assert_output --partial "dropped=0"
+    assert_output --partial "used_cache=yes"
+}
+
+@test "asg-repomap update reparses a touched file only" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    run "$REPOMAP_BIN" build --root "$REPO"
+    assert_success
+    # Bump mtime beyond the 2s slop window.
+    touch -d '2030-01-01' "$REPO/auth.ts"
+    run "$REPOMAP_BIN" update --root "$REPO"
+    assert_success
+    assert_output --partial "reparsed=1"
+    assert_output --partial "added=0"
+    assert_output --partial "dropped=0"
+}
+
+@test "asg-repomap update tracks new and removed files" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    run "$REPOMAP_BIN" build --root "$REPO"
+    assert_success
+    # Add a new file.
+    echo "export function fresh(){return 1;}" > "$REPO/extra.ts"
+    run "$REPOMAP_BIN" update --root "$REPO"
+    assert_success
+    assert_output --partial "added=1"
+    # Remove a file.
+    rm "$REPO/gateway.ts"
+    run "$REPOMAP_BIN" update --root "$REPO"
+    assert_success
+    assert_output --partial "dropped=1"
+}
+
+@test "asg-repomap clean removes the cache dir" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    run "$REPOMAP_BIN" build --root "$REPO"
+    assert_success
+    assert_dir_exist "$REPO/.asg-repomap"
+    run "$REPOMAP_BIN" clean --root "$REPO"
+    assert_success
+    refute [ -d "$REPO/.asg-repomap" ]
+}
+
+@test "asg-repomap build --root on git repo appends to .git/info/exclude" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    ( cd "$REPO" && git init -q && git add . && \
+      git -c user.email=t@t -c user.name=t commit -q -m init )
+    run "$REPOMAP_BIN" build --root "$REPO"
+    assert_success
+    assert_file_contains "$REPO/.git/info/exclude" ".asg-repomap/"
+}
+
+@test "asg-repomap build --force rebuilds ignoring cache" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    run "$REPOMAP_BIN" build --root "$REPO"
+    assert_success
+    run "$REPOMAP_BIN" build --root "$REPO" --force
+    assert_success
+    # force_rebuild → used_cache=no even though cache exists.
+    assert_output --partial "used_cache=no"
+    assert_output --partial "added=3"
+}
+
+@test "asg-repomap stats fails cleanly when no cache exists" {
+    [ -x "$REPOMAP_BIN" ] || skip "asg-repomap not built"
+    setup_cache_repo
+    run "$REPOMAP_BIN" stats --root "$REPO"
+    assert_failure
+    assert_output --partial "no cache"
+}
