@@ -14,6 +14,9 @@
 #include "sg/policy_subagent_start.hpp"
 #include "sg/policy_subagent_stop.hpp"
 #include "sg/policy_tool_error.hpp"
+#ifdef SG_HAS_REPOMAP
+#include "sg/policy_repomap.hpp"
+#endif
 #include "sg/protocol.hpp"
 #include "sg/systemd_notify.hpp"
 #include "sg/transport.hpp"
@@ -65,6 +68,7 @@ const char* HookLabel(sg::Hook hook) {
     case sg::Hook::kSubagentStart:     return "subagent_start";
     case sg::Hook::kSubagentStop:      return "subagent_stop";
     case sg::Hook::kToolError:         return "tool_error";
+    case sg::Hook::kRepomapRender:     return "repomap_render";
     default:                           return "unknown";
   }
 }
@@ -161,6 +165,11 @@ sg::ResponseFrame HandleRequest(const sg::RequestFrame& request) {
     case sg::Hook::kToolError:
       response.payload = sg::EvaluateToolError(request.payload);
       break;
+#ifdef SG_HAS_REPOMAP
+    case sg::Hook::kRepomapRender:
+      response.payload = sg::EvaluateRepomapRender(request.payload);
+      break;
+#endif
     default:
       response.status = sg::Status::kBadRequest;
       response.payload = "{\"suppressOutput\":true}";

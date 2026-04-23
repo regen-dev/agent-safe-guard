@@ -25,6 +25,8 @@ enum class Hook : std::uint16_t {
   kSubagentStart = 10,
   kSubagentStop = 11,
   kToolError = 12,
+  // Non-hook RPC ops start at 100 to leave room for future Claude hook phases.
+  kRepomapRender = 100,
 };
 
 enum class Status : std::uint16_t {

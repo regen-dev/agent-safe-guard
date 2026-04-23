@@ -13,7 +13,7 @@ NATIVE_BUILD_DIR ?= ./build/native
 	test-native-session-start-smoke test-native-session-end-smoke \
 	test-native-pre-compact-smoke test-native-subagent-start-smoke \
 	test-native-subagent-stop-smoke test-native-tool-error-smoke \
-	test-native-repomap-smoke \
+	test-native-repomap-smoke test-native-repomap-session-smoke \
 	native-install-user native-uninstall-user native-watch
 
 test:
@@ -184,6 +184,18 @@ test-native-subagent-stop-smoke: native-build
 test-native-repomap-smoke: native-build
 	SG_REPOMAP_BIN="$(PWD)/$(NATIVE_BUILD_DIR)/native/asg-repomap" \
 	./tests/test_helper/bats-core/bin/bats --jobs 1 --timing --print-output-on-failure tests/integration/repomap.bats
+
+test-native-repomap-session-smoke: native-build
+	SOCK=/tmp/agent-safe-guard/sgd-repomap-session-smoke.sock; \
+	mkdir -p /tmp/agent-safe-guard; \
+	rm -f "$$SOCK"; \
+	./$(NATIVE_BUILD_DIR)/native/sgd --socket "$$SOCK" >/tmp/sgd-repomap-session-smoke.log 2>&1 & \
+	PID=$$!; \
+	trap 'kill $$PID >/dev/null 2>&1 || true; kill -9 $$PID >/dev/null 2>&1 || true' EXIT; \
+	for i in $$(seq 1 50); do [ -S "$$SOCK" ] && break; sleep 0.1; done; \
+	SG_SESSION_START_HOOK="$(PWD)/$(NATIVE_BUILD_DIR)/native/sg-hook-session-start" \
+	SG_DAEMON_SOCKET="$$SOCK" \
+	./tests/test_helper/bats-core/bin/bats --jobs 1 --timing --print-output-on-failure tests/integration/repomap_session.bats
 
 test-native-tool-error-smoke: native-build
 	SOCK=/tmp/agent-safe-guard/sgd-tool-error-smoke.sock; \

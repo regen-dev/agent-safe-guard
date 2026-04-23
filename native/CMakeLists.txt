@@ -107,13 +107,21 @@ if(SG_BUILD_REPOMAP)
     src/native/repomap_index.cpp
     src/native/repomap_format.cpp
     src/native/repomap_store.cpp
-    src/native/repomap_service.cpp)
+    src/native/repomap_service.cpp
+    src/native/policy_repomap.cpp)
   target_include_directories(sg_repomap
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
   target_compile_options(sg_repomap PRIVATE -Wall -Wextra -Wpedantic)
-  target_link_libraries(sg_repomap PUBLIC
-    tree_sitter tree_sitter_typescript tree_sitter_javascript)
+  # sg_repomap publicly depends on sg_common for JSON helpers used by
+  # policy_repomap; private deps on tree-sitter + grammars stay hidden.
+  target_link_libraries(sg_repomap
+    PUBLIC  sg_common
+    PRIVATE tree_sitter tree_sitter_typescript tree_sitter_javascript)
+
+  # Daemon links the repomap library so it can route Hook::kRepomapRender.
+  target_link_libraries(sgd PRIVATE sg_repomap)
+  target_compile_definitions(sgd PRIVATE SG_HAS_REPOMAP=1)
 
   add_executable(asg-repomap src/tools/asg_repomap_main.cpp)
   target_link_libraries(asg-repomap PRIVATE sg_repomap)

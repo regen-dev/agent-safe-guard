@@ -142,6 +142,18 @@ std::optional<std::string> ReadFeatureSetting(std::string_view feature_key) {
     return std::nullopt;
   }
 
+  // Environment variable takes precedence over the features.env file.
+  // This lets test setups disable specific features cleanly via
+  // `export SG_FEATURE_XXX=0` without clobbering the installer-managed
+  // defaults file.
+  {
+    const std::string key(feature_key);
+    if (const char* env = std::getenv(key.c_str());
+        env != nullptr && *env != '\0') {
+      return std::string(env);
+    }
+  }
+
   const auto features_path = DefaultFeaturesFilePath();
   if (features_path.empty()) {
     return std::nullopt;

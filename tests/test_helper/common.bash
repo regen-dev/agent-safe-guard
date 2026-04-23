@@ -38,6 +38,12 @@ SG_DEFAULT_BYTE_LIMIT=102400
 SG_BUDGET_TOTAL=280000
 EOF
 
+    # Repomap off by default in isolated tests — otherwise the native
+    # session-start client would walk the real HOME filesystem when it
+    # tries to render a repomap. Tests that exercise repomap set this
+    # explicitly. Env var beats features.env via ReadFeatureSetting.
+    export SG_FEATURE_REPOMAP=0
+
     # Symlink hooks/lib/common.sh so hooks can source it via relative path
     ln -sf "$PROJ_ROOT/hooks/lib/common.sh" "$HOME/.claude/hooks/lib/common.sh"
 
