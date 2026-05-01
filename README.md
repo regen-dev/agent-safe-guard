@@ -314,10 +314,14 @@ Current direction:
 - [docs/rule-engine-architecture.md](docs/rule-engine-architecture.md) — phase model, ModSecurity-style engine
 - [docs/policy-catalog-console-plan.md](docs/policy-catalog-console-plan.md) — catalog and console UX design
 - [docs/distribution-roadmap.md](docs/distribution-roadmap.md) — packaging and platform plan
+- [docs/memory-safety.md](docs/memory-safety.md) — non-negotiable memory & resource safety contract for contributors (mandatory reading before any allocator-touching diff)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Diffs that allocate, iterate,
+or accept external input must satisfy the [memory-safety
+contract](docs/memory-safety.md) — `make test` is wired to refuse green
+output without an ASan + UBSan pass.
 
 ## Security
 
