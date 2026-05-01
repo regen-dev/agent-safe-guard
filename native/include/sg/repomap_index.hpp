@@ -27,6 +27,18 @@ struct Index {
 
 struct BuildOptions {
   std::uint64_t max_file_bytes = 512 * 1024;  // skip files larger than this
+  // Hard cap on the number of source files indexed in one pass. The walker
+  // aborts when this is hit (caller can detect via CollectSourceFiles return).
+  // Bound exists because $HOME-sized walks otherwise eat unbounded memory.
+  // See `~/.mem/asg-repomap-leak-2026-05-01.md` for the incident.
+  std::size_t max_files = 5000;
+};
+
+// Reasons CollectSourceFiles / BuildIndex stopped before walking everything.
+enum class WalkStatus : std::uint8_t {
+  kOk = 0,
+  kRootMissing,        // repo_root does not exist or is not a directory
+  kFileCapHit,         // hit BuildOptions::max_files
 };
 
 // Walk `repo_root` recursively collecting .ts/.js source files, parse them,
@@ -36,10 +48,11 @@ struct BuildOptions {
 Index BuildIndex(std::string_view repo_root, const BuildOptions& opts = {});
 
 // Collect the list of .ts/.js source files under `repo_root`. Honors the
-// skip list. Results are sorted. Exposed for incremental updates so callers
-// can compare the filesystem's current file set against the cached set.
-void CollectSourceFiles(std::string_view repo_root,
-                        std::vector<std::string>* out);
+// skip list and `opts.max_files`. Results are sorted. Returns whether the
+// walk completed normally or was aborted.
+WalkStatus CollectSourceFiles(std::string_view repo_root,
+                              std::vector<std::string>* out,
+                              const BuildOptions& opts = {});
 
 // Rebuild the derived defines/references maps after a caller mutates
 // idx.files in place. Idempotent.

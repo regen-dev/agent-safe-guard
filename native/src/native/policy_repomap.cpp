@@ -28,6 +28,26 @@ int EnvInt(const char* name, int fallback) {
   }
 }
 
+bool EnvBool(const char* name, bool fallback) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') return fallback;
+  const std::string_view s(raw);
+  if (s == "1" || s == "true" || s == "TRUE" || s == "yes") return true;
+  if (s == "0" || s == "false" || s == "FALSE" || s == "no") return false;
+  return fallback;
+}
+
+const char* SkipReasonString(repomap::EnsureSkipReason r) {
+  switch (r) {
+    case repomap::EnsureSkipReason::kNone:        return "none";
+    case repomap::EnsureSkipReason::kRootMissing: return "root_missing";
+    case repomap::EnsureSkipReason::kUnsafeRoot:  return "unsafe_root";
+    case repomap::EnsureSkipReason::kNotGitRepo:  return "not_git_repo";
+    case repomap::EnsureSkipReason::kFileCapHit:  return "too_many_files";
+  }
+  return "unknown";
+}
+
 std::size_t ExtractBudget(std::string_view json) {
   const auto raw = FindJsonString(json, "budget");
   if (raw.has_value() && !raw->empty()) {
@@ -88,9 +108,30 @@ std::string EvaluateRepomapRender(std::string_view request_json) {
     } catch (...) {
     }
   }
+  // Hard cap on the source-file count. Default 5000 is plenty for any real
+  // project; the cap exists to refuse $HOME-scale walks. See
+  // ~/.mem/asg-repomap-leak-2026-05-01.md.
+  ensure_opts.build.max_files = static_cast<std::size_t>(
+      EnvInt("SG_REPOMAP_MAX_FILES", 5000));
+  ensure_opts.allow_unsafe_root = EnvBool("SG_REPOMAP_ALLOW_UNSAFE_ROOT", false);
+  ensure_opts.require_git_root = EnvBool("SG_REPOMAP_REQUIRE_GIT_ROOT", true);
+
   repomap::EnsureStats stats;
   std::string err;
   auto idx = repomap::EnsureFresh(cwd, ensure_opts, &stats, &err);
+  if (stats.skip_reason != repomap::EnsureSkipReason::kNone &&
+      stats.skip_reason != repomap::EnsureSkipReason::kFileCapHit) {
+    // Hard refusal — surface the reason so the daemon's audit log records
+    // *why* the repomap was empty (not just that it failed).
+    std::string out;
+    out.reserve(128 + err.size());
+    out.append("{\"ok\":false,\"error\":\"");
+    out.append(JsonEscape(err));
+    out.append("\",\"skip_reason\":\"");
+    out.append(SkipReasonString(stats.skip_reason));
+    out.append("\"}");
+    return out;
+  }
   if (idx.files.empty()) {
     return "{\"ok\":false,\"error\":\"no source files\"}";
   }
@@ -114,7 +155,7 @@ std::string EvaluateRepomapRender(std::string_view request_json) {
   // daemon's payload to stdout. Claude Code's SessionStart contract accepts
   // `hookSpecificOutput.additionalContext`.
   std::string out;
-  out.reserve(rendered.text.size() + 128);
+  out.reserve(rendered.text.size() + 256);
   out.append("{\"ok\":true,\"files\":");
   out.append(std::to_string(rendered.file_count));
   out.append(",\"tags\":");
@@ -123,6 +164,9 @@ std::string EvaluateRepomapRender(std::string_view request_json) {
   out.append(std::to_string(rendered.token_estimate));
   out.append(",\"budget\":");
   out.append(std::to_string(budget));
+  if (stats.skip_reason == repomap::EnsureSkipReason::kFileCapHit) {
+    out.append(",\"file_cap_hit\":true");
+  }
   out.append(",\"text\":\"");
   out.append(JsonEscape(rendered.text));
   out.append("\"}");

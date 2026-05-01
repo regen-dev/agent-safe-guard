@@ -61,11 +61,19 @@ std::uint64_t MtimeNs(const fs::path& path) {
 
 }  // namespace
 
-void CollectSourceFiles(std::string_view repo_root,
-                        std::vector<std::string>* out) {
+WalkStatus CollectSourceFiles(std::string_view repo_root,
+                              std::vector<std::string>* out,
+                              const BuildOptions& opts) {
   fs::path root(repo_root);
   std::error_code ec;
-  if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) return;
+  if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+    return WalkStatus::kRootMissing;
+  }
+  // Hard cap on number of source files. If a caller passes max_files == 0
+  // we treat that as "no cap" — keeps the door open for tooling that wants
+  // to walk the whole tree intentionally (the daemon path always sets a cap).
+  const std::size_t cap = opts.max_files;
+  bool cap_hit = false;
   std::vector<fs::path> paths;
   for (auto it = fs::recursive_directory_iterator(
            root, fs::directory_options::skip_permission_denied, ec);
@@ -83,10 +91,15 @@ void CollectSourceFiles(std::string_view repo_root,
     if (!entry.is_regular_file(ec)) continue;
     if (DetectLanguage(p.string()) == Language::kUnknown) continue;
     paths.push_back(p);
+    if (cap > 0 && paths.size() >= cap) {
+      cap_hit = true;
+      break;
+    }
   }
   std::sort(paths.begin(), paths.end());
   out->reserve(paths.size());
   for (const auto& p : paths) out->push_back(p.string());
+  return cap_hit ? WalkStatus::kFileCapHit : WalkStatus::kOk;
 }
 
 void RebuildDerivedMaps(Index* idx) {
@@ -159,7 +172,7 @@ Index BuildIndex(std::string_view repo_root, const BuildOptions& opts) {
   }
 
   std::vector<std::string> sources;
-  CollectSourceFiles(idx.repo_root, &sources);
+  CollectSourceFiles(idx.repo_root, &sources, opts);
   for (const auto& path : sources) {
     FileEntry entry;
     if (!ParseIntoFileEntry(idx.repo_root, path, opts, &entry)) continue;

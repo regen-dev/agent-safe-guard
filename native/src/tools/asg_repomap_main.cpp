@@ -96,6 +96,10 @@ int RunBuild(int argc, char** argv) {
 
   sg::repomap::EnsureOptions opts;
   opts.force_rebuild = force;
+  // The CLI is a developer tool: when the user passes --root explicitly,
+  // trust them. The unsafe-root + git-repo gate exists to protect the
+  // daemon path from accidental $HOME walks; the CLI trusts its caller.
+  opts.allow_unsafe_root = true;
   sg::repomap::EnsureStats stats;
   std::string err;
   const auto idx = sg::repomap::EnsureFresh(root, opts, &stats, &err);
@@ -133,6 +137,8 @@ int RunUpdate(int argc, char** argv) {
   }
   sg::repomap::EnsureOptions opts;
   opts.force_rebuild = false;
+  // CLI: trust explicit --root.
+  opts.allow_unsafe_root = true;
   sg::repomap::EnsureStats stats;
   std::string err;
   const auto idx = sg::repomap::EnsureFresh(root, opts, &stats, &err);
@@ -317,6 +323,8 @@ int RunRender(int argc, char** argv) {
   sg::repomap::EnsureOptions eopts;
   eopts.persist_cache = false;
   eopts.write_git_exclude = false;
+  // CLI: trust explicit --root.
+  eopts.allow_unsafe_root = true;
   sg::repomap::EnsureStats estats;
   std::string err;
   const auto idx = sg::repomap::EnsureFresh(root, eopts, &estats, &err);

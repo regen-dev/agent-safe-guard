@@ -4,9 +4,12 @@
 #include "sg/repomap_store.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <unordered_map>
 #include <vector>
@@ -14,6 +17,47 @@
 namespace sg::repomap {
 
 namespace fs = std::filesystem;
+
+namespace {
+
+// Hardcoded list of paths that EnsureFresh refuses by default. These are
+// places where the daemon was historically dropped by accident (e.g. user
+// runs `claude` from $HOME) and the walker exploded. The list intentionally
+// catches both raw `/` and the common system-managed roots; per-user $HOME
+// is checked separately because we can't bake an absolute path here.
+constexpr std::array<std::string_view, 9> kUnsafeAbsoluteRoots = {
+    "/",         "/tmp",   "/var", "/etc",   "/usr",
+    "/opt",      "/mnt",   "/media", "/home",
+};
+
+bool IsUnsafeAbsoluteRoot(const fs::path& p) {
+  // Compare against canonical lexically-normal form so trailing slashes
+  // and `.` don't sneak past the check.
+  const auto norm = p.lexically_normal().generic_string();
+  for (auto unsafe : kUnsafeAbsoluteRoots) {
+    if (norm == unsafe) return true;
+  }
+  // $HOME — read late so tests can set it to a temp dir and not trip.
+  if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+    if (norm == fs::path(home).lexically_normal().generic_string()) return true;
+  }
+  return false;
+}
+
+bool LooksLikeGitWorkingTree(const fs::path& p) {
+  std::error_code ec;
+  // Either `.git/` directory (regular working tree) or `.git` file
+  // (worktrees / submodules with gitdir pointer) qualifies.
+  const fs::path dot_git = p / ".git";
+  if (fs::exists(dot_git, ec)) return true;
+  return false;
+}
+
+}  // namespace
+
+bool IsUnsafeRoot(std::string_view path) {
+  return IsUnsafeAbsoluteRoot(fs::path(path));
+}
 
 namespace {
 
@@ -60,7 +104,35 @@ Index EnsureFresh(std::string_view repo_root, const EnsureOptions& opts,
   fs::path root(repo_root);
   std::error_code ec;
   if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+    stats.skip_reason = EnsureSkipReason::kRootMissing;
     if (error != nullptr) *error = "repo_root does not exist or not a dir";
+    if (stats_out != nullptr) *stats_out = stats;
+    return idx;
+  }
+
+  // Refuse to walk roots that historically caused unbounded growth — $HOME,
+  // /, /tmp, etc. The escape hatch is `allow_unsafe_root`, used by tests and
+  // by the `asg-repomap` CLI which trusts the user to point at a real repo.
+  if (!opts.allow_unsafe_root && IsUnsafeAbsoluteRoot(root)) {
+    stats.skip_reason = EnsureSkipReason::kUnsafeRoot;
+    if (error != nullptr) {
+      *error = "refusing to repomap unsafe root: " +
+               root.lexically_normal().generic_string();
+    }
+    if (stats_out != nullptr) *stats_out = stats;
+    return idx;
+  }
+
+  // Require a git working tree by default. Catches the case where `claude`
+  // is started in a directory that *isn't* unsafe-listed but also isn't a
+  // project (random scratch dirs, downloads, etc.).
+  if (opts.require_git_root && !opts.allow_unsafe_root &&
+      !LooksLikeGitWorkingTree(root)) {
+    stats.skip_reason = EnsureSkipReason::kNotGitRepo;
+    if (error != nullptr) {
+      *error = "refusing to repomap non-git directory: " +
+               root.lexically_normal().generic_string();
+    }
     if (stats_out != nullptr) *stats_out = stats;
     return idx;
   }
@@ -82,7 +154,14 @@ Index EnsureFresh(std::string_view repo_root, const EnsureOptions& opts,
 
   // Step 2: walk the filesystem for the authoritative set of source files.
   std::vector<std::string> live_paths;
-  CollectSourceFiles(repo_root, &live_paths);
+  const auto walk_status =
+      CollectSourceFiles(repo_root, &live_paths, opts.build);
+  if (walk_status == WalkStatus::kFileCapHit) {
+    stats.skip_reason = EnsureSkipReason::kFileCapHit;
+    // Continue with the partial set so the caller still gets *something*,
+    // but the skip_reason field tells the audit log why the result is
+    // incomplete. The cap exists because $HOME-sized walks otherwise OOM.
+  }
 
   std::unordered_map<std::string, std::uint32_t> cached_by_rel;
   cached_by_rel.reserve(idx.files.size());
