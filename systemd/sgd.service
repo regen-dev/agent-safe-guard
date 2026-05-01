@@ -13,6 +13,15 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.claude %t/agent-safe-guard
+# Memory-safety backstop. The in-process RSS watchdog should catch a
+# runaway operation first (~1 GiB) and exit cleanly. MemoryMax is the
+# kernel-enforced absolute cap; if we hit it, the cgroup OOM-killer
+# terminates us and Restart=on-failure brings us back. Tune up only if a
+# legitimate workload (huge repomap on a real project) trips it.
+# See ~/.mem/asg-repomap-leak-2026-05-01.md.
+MemoryHigh=1G
+MemoryMax=2G
+TasksMax=64
 
 [Install]
 WantedBy=multi-user.target

@@ -18,6 +18,7 @@
 #include "sg/policy_repomap.hpp"
 #endif
 #include "sg/protocol.hpp"
+#include "sg/rss_watchdog.hpp"
 #include "sg/systemd_notify.hpp"
 #include "sg/transport.hpp"
 
@@ -230,6 +231,15 @@ int main(int argc, char** argv) {
       std::cerr << "sgd: catalog compile error: " << compile_error << "\n";
     }
   }
+
+  // Memory-safety backstop: poll our own RSS in a background thread, abort
+  // long-running operations when we exceed the configured cap, and exit so
+  // systemd restarts us cleanly. The kernel-level cap (MemoryMax= in
+  // sgd.service) is the absolute last line of defense; this watchdog catches
+  // the breach earlier and emits a structured event for postmortem.
+  // See ~/.mem/asg-repomap-leak-2026-05-01.md for the incident that
+  // motivated this.
+  (void)sg::StartRssWatchdogFromEnv();
 
   sg::NotifySystemdReady("sgd online");
   std::cerr << "sgd: listening";

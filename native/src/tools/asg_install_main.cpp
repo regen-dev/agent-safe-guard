@@ -589,7 +589,12 @@ void InstallSystemdUnits(const Options& options) {
       "[Service]\nType=notify\nExecStart=" +
       sgd->string() +
       "\nRestart=on-failure\nRestartSec=1s\nNoNewPrivileges=true\nPrivateTmp=true\n"
-      "ProtectSystem=strict\nProtectHome=read-only\nReadWritePaths=%h/.claude %t/agent-safe-guard\n";
+      "ProtectSystem=strict\nProtectHome=read-only\nReadWritePaths=%h/.claude %t/agent-safe-guard\n"
+      // Memory-safety backstop. The in-process RSS watchdog catches a
+      // runaway operation around 1 GiB and exits cleanly so systemd restarts.
+      // MemoryMax is the kernel cgroup absolute cap. See
+      // ~/.mem/asg-repomap-leak-2026-05-01.md.
+      "MemoryHigh=1G\nMemoryMax=2G\nTasksMax=64\n";
   WriteTextFile(socket_unit, socket_text);
   WriteTextFile(service_unit, service_text);
   Info("Installed user units: asg.socket, asg.service");

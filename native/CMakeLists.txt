@@ -23,6 +23,7 @@ set(SG_COMMON_SOURCES
   src/native/policy_tool_error.cpp
   src/native/process.cpp
   src/native/protocol.cpp
+  src/native/rss_watchdog.cpp
   src/native/systemd_notify.cpp
   src/native/transport.cpp
 )
