@@ -20,6 +20,10 @@ setup() {
     REPO="$TEST_TEMP/repo"
     mkdir -p "$REPO"
     cp -r "$PROJ_ROOT/tests/fixtures/repomap/ts-crossref/." "$REPO/"
+    # The daemon-side EnsureFresh refuses non-git directories by default
+    # (incident 2026-05-01 — accidental $HOME walks). Mark the fixture as
+    # a git working tree so the test path matches a real project.
+    mkdir -p "$REPO/.git"
 }
 
 teardown() {

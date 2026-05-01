@@ -131,6 +131,22 @@ if(SG_BUILD_REPOMAP)
   target_link_libraries(asg-repomap PRIVATE sg_repomap)
 
   install(TARGETS asg-repomap RUNTIME DESTINATION bin)
+
+  if(SG_BUILD_TESTS)
+    # Doctest header is shipped under third_party/doctest/doctest/.
+    set(SG_DOCTEST_INCLUDE_DIR
+        "${CMAKE_SOURCE_DIR}/third_party/doctest/doctest")
+    if(NOT EXISTS "${SG_DOCTEST_INCLUDE_DIR}/doctest.h")
+      message(FATAL_ERROR
+        "SG_BUILD_TESTS=ON but doctest.h missing at "
+        "${SG_DOCTEST_INCLUDE_DIR}. Run: git submodule update --init --recursive")
+    endif()
+    add_executable(sg_repomap_unit_tests tests/repomap_unit_tests.cpp)
+    target_link_libraries(sg_repomap_unit_tests PRIVATE sg_repomap)
+    target_include_directories(sg_repomap_unit_tests
+      PRIVATE ${SG_DOCTEST_INCLUDE_DIR})
+    target_compile_options(sg_repomap_unit_tests PRIVATE -Wall -Wextra)
+  endif()
 endif()
 
 install(TARGETS sgd sg-hook-pre-tool-use sg-hook-post-tool-use

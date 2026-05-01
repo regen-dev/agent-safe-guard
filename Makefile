@@ -4,9 +4,23 @@ PROJ_ROOT := $(shell pwd)
 COVERAGE_DIR := ./coverage
 TRACE_FILE := /tmp/sg-coverage-trace.txt
 NATIVE_BUILD_DIR ?= ./build/native
+NATIVE_ASAN_BUILD_DIR ?= ./build/native-asan
+
+# Memory-safety toolchain. ASan is the default mandate (no external dep,
+# fast, leak-detecting). Valgrind is the heavier optional check kept for
+# release pipelines and diffs that touch allocator-sensitive code.
+# CLAUDE.md "Memory & resource safety" mandates that one of these MUST run
+# in every CI build — the test-memory target is the contract.
+ASAN_OPTIONS_DEFAULT ?= detect_leaks=1:halt_on_error=1:abort_on_error=0:print_stats=0
+UBSAN_OPTIONS_DEFAULT ?= halt_on_error=1:abort_on_error=0:print_stacktrace=1
+VALGRIND ?= valgrind
+VALGRIND_FLAGS ?= --error-exitcode=99 --leak-check=full \
+	--show-leak-kinds=definite,indirect \
+	--errors-for-leak-kinds=definite,indirect --track-origins=yes
 
 .PHONY: test test-unit test-integration coverage clean \
-	native-configure native-build test-native-pre-smoke test-native-post-smoke \
+	native-configure native-build native-build-asan \
+	test-native-pre-smoke test-native-post-smoke \
 	test-native-permission-smoke test-native-read-guard-smoke \
 	test-native-rule-audit \
 	test-native-read-compress-smoke test-native-stop-smoke \
@@ -14,9 +28,16 @@ NATIVE_BUILD_DIR ?= ./build/native
 	test-native-pre-compact-smoke test-native-subagent-start-smoke \
 	test-native-subagent-stop-smoke test-native-tool-error-smoke \
 	test-native-repomap-smoke test-native-repomap-session-smoke \
+	test-native-unit test-memory test-memory-valgrind \
 	native-install-user native-uninstall-user native-watch
 
-test:
+test: test-memory
+	$(BATS) $(BATS_FLAGS) tests/unit/ tests/integration/
+
+# `test-bats` is the same shell-only gate without the C++ memory check, for
+# the rare case where you're iterating on a bats-only diff and the C++
+# build artifacts haven't changed. CI must use `make test`, not this.
+test-bats:
 	$(BATS) $(BATS_FLAGS) tests/unit/ tests/integration/
 
 test-unit:
@@ -42,6 +63,44 @@ native-configure:
 
 native-build: native-configure
 	cmake --build $(NATIVE_BUILD_DIR) -j
+
+# AddressSanitizer + UBSan build, with C++ unit tests enabled. Every CI run
+# of `make test-memory` rebuilds this from scratch; do NOT skip it. See
+# CLAUDE.md "Memory & resource safety" for why this is non-negotiable.
+native-build-asan:
+	cmake -S . -B $(NATIVE_ASAN_BUILD_DIR) \
+		-DSG_BUILD_NATIVE=ON \
+		-DSG_BUILD_TESTS=ON \
+		-DSG_SANITIZER=address,undefined \
+		-DCMAKE_BUILD_TYPE=Debug
+	cmake --build $(NATIVE_ASAN_BUILD_DIR) -j
+
+# Run the C++ unit suite under ASan/UBSan. This is the primary gate that
+# catches the kind of unbounded growth + leak that produced the 2026-05-01
+# incident. New features that allocate in loops MUST add a stress case here.
+test-native-unit: native-build-asan
+	@echo "=== sg_repomap_unit_tests under ASan/UBSan ==="
+	ASAN_OPTIONS=$(ASAN_OPTIONS_DEFAULT) \
+	UBSAN_OPTIONS=$(UBSAN_OPTIONS_DEFAULT) \
+	$(NATIVE_ASAN_BUILD_DIR)/native/sg_repomap_unit_tests
+
+# Full memory check: ASan/UBSan unit tests. This is the target referenced
+# from CLAUDE.md as the mandatory pre-merge gate.
+test-memory: test-native-unit
+	@echo ""
+	@echo "=== Memory check passed (ASan + UBSan, unit suite) ==="
+
+# Heavier valgrind run, optional, used for releases and any diff that
+# touches the repomap / daemon allocator. Requires `valgrind` on PATH.
+# On Ubuntu/Debian: `sudo apt install valgrind`.
+test-memory-valgrind: native-build
+	@command -v $(VALGRIND) >/dev/null 2>&1 || { \
+		echo "valgrind not installed; install with 'sudo apt install valgrind' or set VALGRIND=/path"; \
+		exit 1; }
+	@echo "=== valgrind: asg-repomap CLI smoke ==="
+	$(VALGRIND) $(VALGRIND_FLAGS) \
+		$(NATIVE_BUILD_DIR)/native/asg-repomap build --file \
+		$(PROJ_ROOT)/tests/fixtures/repomap/ts-minimal/auth.ts
 
 native-install-user: native-build
 	./$(NATIVE_BUILD_DIR)/native/asg-install
