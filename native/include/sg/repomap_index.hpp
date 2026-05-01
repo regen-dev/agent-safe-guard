@@ -2,6 +2,7 @@
 
 #include "sg/repomap_parser.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -72,6 +73,38 @@ struct RankOptions {
   double damping = 0.85;
   std::size_t max_iters = 50;
   double tol = 1e-6;
+
+  // Hard caps that bound the work the ranker is willing to do per identifier.
+  // The pre-fix code multiplied popular identifiers' weight by 0.1 but still
+  // iterated refs*defs — that's the loop that ate 33 GB on 2026-05-01.
+  // popular_def_threshold: skip identifier outright (no edges) when the
+  //   identifier is defined in more than this many files. `i`, `data`, etc.
+  std::size_t popular_def_threshold = 100;
+  // max_edges_per_ident: skip identifier when refs.size() * defs.size()
+  //   exceeds this. Catches asymmetric blow-ups missed by the def threshold.
+  std::size_t max_edges_per_ident = 10000;
+  // Optional wall-clock deadline. When set (non-zero), RankFiles returns
+  // early if the deadline is exceeded; the partial ranking is still valid.
+  // Default-constructed time_point means "no deadline".
+  std::chrono::steady_clock::time_point deadline = {};
+};
+
+// Status of a RankFiles invocation. Returned alongside the ranking via
+// RankFilesEx; the std::vector overload exists for backward-compat callers
+// that don't care.
+enum class RankStatus : std::uint8_t {
+  kOk = 0,
+  kDeadlineExceeded,   // wall-clock deadline hit before convergence
+};
+
+struct RankResult {
+  std::vector<RankedFile> ranked;
+  RankStatus status = RankStatus::kOk;
+  // Number of identifiers skipped because they exceeded popular_def_threshold
+  // or max_edges_per_ident. Surface this in audit/event logs.
+  std::size_t skipped_idents = 0;
+  // Iterations actually run before convergence or deadline.
+  std::size_t iters_run = 0;
 };
 
 // PageRank over the file graph. Edges are built from identifier references
@@ -80,10 +113,14 @@ struct RankOptions {
 //   * len >= 8 with camelCase / snake_case / kebab-case → ×10
 //   * starts with `_`                                   → ×0.1
 //   * identifier defined in > 5 files                    → ×0.1 (applied after)
+// Identifiers exceeding `popular_def_threshold` definitions or
+// `max_edges_per_ident` worth of refs*defs are SKIPPED (no edges) to avoid
+// pathological N×M growth on common short identifiers.
 // Returns RankedFile list sorted by score desc, ties broken by rel_path asc.
 // When the graph has zero edges, every file gets an equal 1/N score.
 std::vector<RankedFile> RankFiles(const Index& idx,
                                   const RankOptions& opts = {});
+RankResult RankFilesEx(const Index& idx, const RankOptions& opts = {});
 
 // Public for testing — identifier shape multiplier used for edge weights.
 double IdentifierShapeMultiplier(std::string_view ident);

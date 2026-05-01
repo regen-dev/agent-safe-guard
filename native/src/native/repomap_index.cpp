@@ -182,18 +182,48 @@ Index BuildIndex(std::string_view repo_root, const BuildOptions& opts) {
   return idx;
 }
 
-std::vector<RankedFile> RankFiles(const Index& idx, const RankOptions& opts) {
+RankResult RankFilesEx(const Index& idx, const RankOptions& opts) {
+  RankResult result;
   const std::size_t n = idx.files.size();
-  std::vector<RankedFile> ranked;
-  if (n == 0) return ranked;
+  if (n == 0) return result;
+
+  const bool has_deadline =
+      opts.deadline != std::chrono::steady_clock::time_point{};
+  auto deadline_hit = [&]() {
+    return has_deadline && std::chrono::steady_clock::now() >= opts.deadline;
+  };
 
   // adjacency: adj[src] = list of (dst, weight)
   std::vector<std::vector<std::pair<std::uint32_t, double>>> adj(n);
   // Pass 1: accumulate (src, dst) -> weight into a per-src map, then flatten.
   std::vector<std::unordered_map<std::uint32_t, double>> per_src(n);
   for (const auto& [ident, def_files] : idx.defines) {
+    if (deadline_hit()) {
+      result.status = RankStatus::kDeadlineExceeded;
+      break;
+    }
     auto ref_it = idx.references.find(ident);
     if (ref_it == idx.references.end()) continue;
+    // Hard cap on popularity: an identifier defined in many files contributes
+    // ~no signal but iterates refs*defs times. Skip outright. The legacy
+    // `rare = 0.1` weight kept iterating, which is the bug that ate 33 GB.
+    if (opts.popular_def_threshold > 0 &&
+        def_files.size() > opts.popular_def_threshold) {
+      ++result.skipped_idents;
+      continue;
+    }
+    // Asymmetric blow-up: an identifier with few defs but enormous refs (or
+    // vice-versa) still produces refs*defs work. Skip when the product
+    // exceeds max_edges_per_ident.
+    if (opts.max_edges_per_ident > 0) {
+      const std::size_t edges =
+          static_cast<std::size_t>(ref_it->second.size()) *
+          static_cast<std::size_t>(def_files.size());
+      if (edges > opts.max_edges_per_ident) {
+        ++result.skipped_idents;
+        continue;
+      }
+    }
     const double shape = IdentifierShapeMultiplier(ident);
     const double rare =
         def_files.size() > 5 ? 0.1 : 1.0;  // widely-defined = less informative
@@ -214,11 +244,17 @@ std::vector<RankedFile> RankFiles(const Index& idx, const RankOptions& opts) {
       adj[src].emplace_back(kv.first, kv.second / out_sum);
     }
   }
+  // Free per_src eagerly — for large graphs it's the dominant transient.
+  std::vector<std::unordered_map<std::uint32_t, double>>().swap(per_src);
 
   std::vector<double> r(n, 1.0 / static_cast<double>(n));
   std::vector<double> r_new(n);
   const double teleport = (1.0 - opts.damping) / static_cast<double>(n);
   for (std::size_t iter = 0; iter < opts.max_iters; ++iter) {
+    if (deadline_hit()) {
+      result.status = RankStatus::kDeadlineExceeded;
+      break;
+    }
     std::fill(r_new.begin(), r_new.end(), teleport);
     // Dangling nodes (no outbound edges) redistribute uniformly.
     double dangling_mass = 0.0;
@@ -241,20 +277,25 @@ std::vector<RankedFile> RankFiles(const Index& idx, const RankOptions& opts) {
       delta += std::abs(r_new[i] - r[i]);
     }
     r.swap(r_new);
+    ++result.iters_run;
     if (delta < opts.tol) break;
   }
 
-  ranked.reserve(n);
+  result.ranked.reserve(n);
   for (std::uint32_t i = 0; i < n; ++i) {
-    ranked.push_back({i, r[i]});
+    result.ranked.push_back({i, r[i]});
   }
-  std::sort(ranked.begin(), ranked.end(),
+  std::sort(result.ranked.begin(), result.ranked.end(),
             [&](const RankedFile& a, const RankedFile& b) {
               if (a.score != b.score) return a.score > b.score;
               return idx.files[a.file_id].rel_path <
                      idx.files[b.file_id].rel_path;
             });
-  return ranked;
+  return result;
+}
+
+std::vector<RankedFile> RankFiles(const Index& idx, const RankOptions& opts) {
+  return RankFilesEx(idx, opts).ranked;
 }
 
 }  // namespace sg::repomap

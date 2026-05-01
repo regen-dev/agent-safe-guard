@@ -5,6 +5,7 @@
 #include "sg/repomap_index.hpp"
 #include "sg/repomap_service.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -136,7 +137,21 @@ std::string EvaluateRepomapRender(std::string_view request_json) {
     return "{\"ok\":false,\"error\":\"no source files\"}";
   }
 
-  const auto ranked = repomap::RankFiles(idx);
+  // Budget the ranker too. The PageRank N×M explosion (the actual 33 GB bug)
+  // is bounded by popular_def_threshold + max_edges_per_ident; the deadline
+  // is belt-and-suspenders for any path we missed.
+  repomap::RankOptions rank_opts;
+  rank_opts.popular_def_threshold = static_cast<std::size_t>(
+      EnvInt("SG_REPOMAP_POPULAR_DEF_THRESHOLD", 100));
+  rank_opts.max_edges_per_ident = static_cast<std::size_t>(
+      EnvInt("SG_REPOMAP_MAX_EDGES_PER_IDENT", 10000));
+  const int deadline_ms = EnvInt("SG_REPOMAP_RENDER_DEADLINE_MS", 10000);
+  if (deadline_ms > 0) {
+    rank_opts.deadline = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(deadline_ms);
+  }
+  const auto rank_result = repomap::RankFilesEx(idx, rank_opts);
+  const auto& ranked = rank_result.ranked;
   repomap::RenderOptions render_opts;
   render_opts.max_tokens = budget;
   render_opts.include_refs = false;
@@ -164,6 +179,16 @@ std::string EvaluateRepomapRender(std::string_view request_json) {
   out.append(std::to_string(rendered.token_estimate));
   out.append(",\"budget\":");
   out.append(std::to_string(budget));
+  // Surface bookkeeping so the audit trail can flag pathological inputs
+  // even when the render succeeded. A nonzero skipped_idents in production
+  // is a flag that the input has unusually popular short identifiers.
+  out.append(",\"skipped_idents\":");
+  out.append(std::to_string(rank_result.skipped_idents));
+  out.append(",\"rank_status\":\"");
+  out.append(rank_result.status == repomap::RankStatus::kDeadlineExceeded
+                 ? "deadline_exceeded"
+                 : "ok");
+  out.append("\"");
   if (stats.skip_reason == repomap::EnsureSkipReason::kFileCapHit) {
     out.append(",\"file_cap_hit\":true");
   }
