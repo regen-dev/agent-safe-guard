@@ -34,6 +34,14 @@ jobs:
       - name: Unit tests
         run: make test-unit
 
+      # Mandatory memory-safety gate: builds a separate tree with
+      # AddressSanitizer + UBSan and runs the C++ doctest suite. The
+      # contract for this step is documented in docs/memory-safety.md;
+      # if it ever fails for a reason other than a real memory issue,
+      # fix the flake — never disable.
+      - name: Memory check (ASan + UBSan)
+        run: make test-memory
+
       - name: Integration — asg-cli, install, statusline
         run: |
           ./tests/test_helper/bats-core/bin/bats --jobs 4 --timing --print-output-on-failure \
@@ -87,6 +95,12 @@ jobs:
 
       - name: Native smoke — tool-error
         run: make test-native-tool-error-smoke
+
+      - name: Native smoke — repomap CLI
+        run: make test-native-repomap-smoke
+
+      - name: Native smoke — repomap session-start
+        run: make test-native-repomap-session-smoke
 
       - name: Native rule audit
         run: make test-native-rule-audit
